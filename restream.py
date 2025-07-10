@@ -20,8 +20,10 @@ EXPIRE_AGE = 7200             # 2 hours
 FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
+"max": "https://youtube.com/@maxvelocitywx/videos",
 
 "vallathorukatha": "https://www.youtube.com/@babu_ramachandran/videos",
+
     "furqan": "https://youtube.com/@alfurqan4991/videos",
 
    "rahmani": "https://www.youtube.com/@ShajahanRahmaniOfficial/videos",
