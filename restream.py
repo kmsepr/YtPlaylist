@@ -103,7 +103,7 @@ def stream_channel(channel):
 @app.route("/")
 def index():
     links = "".join(f'<li><a href="/{name}.mp3">{name}</a></li>' for name in CHANNELS)
-    return f"<h3>YouTube Live Audio</h3><ul>{links}</ul>"
+    return f"<h3>YouTube Podcast</h3><ul>{links}</ul>"
 
 
 # Start the caching thread
