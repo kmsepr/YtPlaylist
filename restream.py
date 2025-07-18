@@ -55,9 +55,18 @@ def fetch_latest_video_url(name, channel_url):
         ], capture_output=True, text=True, check=True)
 
         data = json.loads(result.stdout)
-        return f"https://www.youtube.com/watch?v={data['entries'][0]['id']}"
+        video_id = data['entries'][0]['id']
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        logging.info(f"✅ [{name}] Video URL fetched successfully")
+        return video_url
+
+    except subprocess.CalledProcessError as e:
+        logging.error(f"❌ [{name}] yt-dlp failed: {e}")
+        logging.error(f"[{name}] yt-dlp stderr:\n{e.stderr.strip()}")
+        return None
     except Exception as e:
-        logging.error(f"[{name}] Error fetching video: {e}")
+        logging.error(f"❌ [{name}] General error: {e}")
         return None
 
 @app.route("/<channel>.mp3")
