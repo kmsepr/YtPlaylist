@@ -212,62 +212,53 @@ def auto_download_mp3s():
         time.sleep(RECHECK_INTERVAL)
 
 @app.route("/<channel>.mp3")
-def stream_mp3(channel):
+def stream_live_audio(channel):
     if channel not in CHANNELS:
         return "Channel not found", 404
 
-    data = VIDEO_CACHE[channel]
-    video_url = data.get("url")
-    if not video_url:
-        video_url, thumbnail, video_id, upload_date, title, channel_name = fetch_latest_video_url(channel, CHANNELS[channel])
+    url = CHANNELS[channel]
+
+    try:
+        # Fetch latest video URL only
+        video_url, *_ = fetch_latest_video_url(channel, url)
         if not video_url:
-            return "Unable to fetch video", 500
-        if video_id and LAST_VIDEO_ID[channel] != video_id:
-            LAST_VIDEO_ID[channel] = video_id
-            VIDEO_CACHE[channel].update({
-                "url": video_url,
-                "last_checked": time.time(),
-                "thumbnail": thumbnail,
-                "upload_date": upload_date,
-                "title": title,
-                "channel": channel_name,
-            })
+            return "Could not fetch video", 500
 
-    mp3_path = download_and_convert(channel, video_url)
-    if not mp3_path or not mp3_path.exists():
-        return "Error preparing stream", 500
+        # Create a generator that pipes yt-dlp to ffmpeg and yields data
+        def generate():
+            yt = subprocess.Popen([
+                "yt-dlp",
+                "-f", "bestaudio",
+                "-o", "-",  # stream to stdout
+                "--cookies", "/mnt/data/cookies.txt",
+                "--user-agent", FIXED_USER_AGENT,
+                video_url
+            ], stdout=subprocess.PIPE)
 
-    file_size = os.path.getsize(mp3_path)
-    range_header = request.headers.get('Range', None)
-    headers = {
-        'Content-Type': 'audio/mpeg',
-        'Accept-Ranges': 'bytes',
-    }
+            ff = subprocess.Popen([
+                "ffmpeg",
+                "-i", "pipe:0",
+                "-f", "mp3",
+                "-ab", "64k",
+                "-ar", "22050",
+                "-ac", "1",
+                "-hide_banner",
+                "-loglevel", "quiet",
+                "pipe:1"
+            ], stdin=yt.stdout, stdout=subprocess.PIPE)
 
-    if range_header:
-        try:
-            range_value = range_header.strip().split("=")[1]
-            byte1, byte2 = range_value.split("-")
-            byte1 = int(byte1)
-            byte2 = int(byte2) if byte2 else file_size - 1
-        except Exception as e:
-            return f"Invalid Range header: {e}", 400
+            yt.stdout.close()
+            while True:
+                chunk = ff.stdout.read(4096)
+                if not chunk:
+                    break
+                yield chunk
 
-        length = byte2 - byte1 + 1
-        with open(mp3_path, 'rb') as f:
-            f.seek(byte1)
-            chunk = f.read(length)
+        return Response(stream_with_context(generate()), mimetype="audio/mpeg")
 
-        headers.update({
-            'Content-Range': f'bytes {byte1}-{byte2}/{file_size}',
-            'Content-Length': str(length)
-        })
-        return Response(chunk, status=206, headers=headers)
-
-    with open(mp3_path, 'rb') as f:
-        data = f.read()
-    headers['Content-Length'] = str(file_size)
-    return Response(data, headers=headers)
+    except Exception as e:
+        logging.error(f"Streaming error: {e}")
+        return "Streaming error", 500
 
 @app.route("/")
 def index():
