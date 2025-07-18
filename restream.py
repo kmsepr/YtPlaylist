@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 COOKIES_PATH = "/mnt/data/cookies.txt"
-REFRESH_INTERVAL = 1200  # 20 minutes
+REFRESH_INTERVAL = 1200  # Refresh every 20 minutes
 
 CHANNELS = {
     "max": "https://youtube.com/@maxvelocitywx/videos",
@@ -35,8 +35,7 @@ def fetch_latest_video_url(name, channel_url):
         data = json.loads(result.stdout)
         video_id = data['entries'][0]['id']
         video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        logging.info(f"✅ [{name}] Video URL fetched successfully")
+        logging.info(f"✅ [{name}] Cached: {video_url}")
         return video_url
 
     except subprocess.CalledProcessError as e:
@@ -51,9 +50,14 @@ def fetch_latest_video_url(name, channel_url):
 def update_video_cache():
     while True:
         for name, url in CHANNELS.items():
+            logging.info(f"🔄 Fetching latest video for [{name}]")
             video_url = fetch_latest_video_url(name, url)
             if video_url:
                 VIDEO_CACHE[name] = video_url
+            else:
+                logging.warning(f"⚠️ [{name}] No video found or fetch failed.")
+            time.sleep(2)  # avoid 429 by spacing calls
+        logging.info(f"✅ Cache refresh complete. Waiting {REFRESH_INTERVAL}s\n")
         time.sleep(REFRESH_INTERVAL)
 
 
@@ -106,7 +110,7 @@ def index():
     return f"<h3>YouTube Podcast</h3><ul>{links}</ul>"
 
 
-# Start the caching thread
+# Start the background cache thread
 threading.Thread(target=update_video_cache, daemon=True).start()
 
 if __name__ == "__main__":
