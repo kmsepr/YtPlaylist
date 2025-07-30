@@ -20,7 +20,8 @@ EXPIRE_AGE = 7200             # 2 hours
 FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
-"max": "https://youtube.com/@maxvelocitywx/videos",
+"zamzam": "https://youtube.com/@zamzamacademy/videos",
+    "jrstudio": "https://youtube.com/@jrstudiomalayalam/videos",
 
 "vallathorukatha": "https://www.youtube.com/@babu_ramachandran/videos",
 
@@ -29,7 +30,8 @@ CHANNELS = {
    "rahmani": "https://www.youtube.com/@ShajahanRahmaniOfficial/videos",
 
 
-    "skicr": "https://youtube.com/@skicrtv/videos",
+    
+
     "dhruvrathee": "https://youtube.com/@dhruvrathee/videos",
     "safari": "https://youtube.com/@safaritvlive/videos",
 
@@ -46,17 +48,17 @@ CHANNELS = {
     "ccm": "https://youtube.com/@cambridgecentralmosque/videos",
     "maheen": "https://youtube.com/@hitchhikingnomaad/videos",
     "entri": "https://youtube.com/@entriapp/videos",
-    "zamzam": "https://youtube.com/@zamzamacademy/videos",
-    "jrstudio": "https://youtube.com/@jrstudiomalayalam/videos",
+    
     "raftalks": "https://youtube.com/@raftalksmalayalam/videos",
+
     "parvinder": "https://www.youtube.com/@pravindersheoran/videos",
 
 
     "suprabhatam": "https://youtube.com/@suprabhaatham2023/videos",
+
     "bayyinah": "https://youtube.com/@bayyinah/videos",
 
-    "sunnxt": "https://youtube.com/@sunnxtmalayalam/videos",
-    "movieworld": "https://youtube.com/@movieworldmalayalammovies/videos",
+    
     "comedy": "https://youtube.com/@malayalamcomedyscene5334/videos",
     "studyiq": "https://youtube.com/@studyiqiasenglish/videos",
     "sreekanth": "https://youtube.com/@sreekanthvettiyar/videos",
