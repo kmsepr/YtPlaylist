@@ -21,18 +21,19 @@ FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
 
+"kasranker": "https://youtube.com/@kasrankerofficial/videos",
 
 "academis": "https://youtube.com/@academispsc/videos",
+
  "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
+
      "talent": "https://youtube.com/@talentacademyonline/videos",
 
    
     "entri": "https://youtube.com/@entriapp/videos",
     
     
-    "studyiq": "https://youtube.com/@studyiqiasenglish/videos",
-    
-    "unacademy": "https://youtube.com/@unacademyiasenglish/videos",
+
     
     
 }
