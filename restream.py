@@ -21,6 +21,8 @@ FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
 
+
+"academis": "https://youtube.com/@academispsc/videos",
  "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
      "talent": "https://youtube.com/@talentacademyonline/videos",
 
