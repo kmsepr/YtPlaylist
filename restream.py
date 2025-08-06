@@ -21,20 +21,41 @@ FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
 
-    
+"vallathorukatha": "https://www.youtube.com/@babu_ramachandran/videos",
+    "furqan": "https://youtube.com/@alfurqan4991/videos",
+    "skicr": "https://youtube.com/@skicrtv/videos",
+    "dhruvrathee": "https://youtube.com/@dhruvrathee/videos",
+    "safari": "https://youtube.com/@safaritvlive/videos",
+
+"qasimi": "https://www.youtube.com/@quranstudycentremukkam/videos",
+    "sharique": "https://youtube.com/@shariquesamsudheen/videos",
+
+
+    "vijayakumarblathur": "https://youtube.com/@vijayakumarblathur/videos",
  "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
      "talent": "https://youtube.com/@talentacademyonline/videos",
 
-   
+   "drali": "https://youtube.com/@draligomaa/videos",
+    "yaqeen": "https://youtube.com/@yaqeeninstituteofficial/videos",
     "ccm": "https://youtube.com/@cambridgecentralmosque/videos",
-    
+    "maheen": "https://youtube.com/@hitchhikingnomaad/videos",
     "entri": "https://youtube.com/@entriapp/videos",
     "zamzam": "https://youtube.com/@zamzamacademy/videos",
     "jrstudio": "https://youtube.com/@jrstudiomalayalam/videos",
     "raftalks": "https://youtube.com/@raftalksmalayalam/videos",
-    
+    "parvinder": "https://www.youtube.com/@pravindersheoran/videos",
+
+
+    "suprabhatam": "https://youtube.com/@suprabhaatham2023/videos",
+    "bayyinah": "https://youtube.com/@bayyinah/videos",
+
+    "sunnxt": "https://youtube.com/@sunnxtmalayalam/videos",
+    "movieworld": "https://youtube.com/@movieworldmalayalammovies/videos",
+    "comedy": "https://youtube.com/@malayalamcomedyscene5334/videos",
     "studyiq": "https://youtube.com/@studyiqiasenglish/videos",
-    
+    "sreekanth": "https://youtube.com/@sreekanthvettiyar/videos",
+    "jr": "https://youtube.com/@yesitsmejr/videos",
+    "habib": "https://youtube.com/@habibomarcom/videos",
     "unacademy": "https://youtube.com/@unacademyiasenglish/videos",
     "eftguru": "https://youtube.com/@eftguru-ql8dk/videos",
     "anurag": "https://youtube.com/@anuragtalks1/videos",
@@ -93,7 +114,7 @@ def download_and_convert(channel, video_url):
         # Download best audio and thumbnail
         subprocess.run([
             "yt-dlp",
-            "-f", "18",
+            "-f", "bestaudio",
             "--output", str(base_path) + ".%(ext)s",
             "--write-thumbnail",
             "--convert-thumbnails", "jpg",
@@ -119,7 +140,7 @@ def download_and_convert(channel, video_url):
             "-map", "1:v",
             "-c:a", "libmp3lame",
             "-c:v", "mjpeg",
-            "-b:a", "40k",
+            "-b:a", "64k",
             "-ar", "22050",
             "-ac", "1",
             "-id3v2_version", "3",
