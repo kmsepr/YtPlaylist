@@ -90,15 +90,16 @@ def download_and_convert(channel, video_url):
 
         # Download best audio and thumbnail
         subprocess.run([
-            "yt-dlp",
+           "yt-dlp",
             "-f", "bestaudio",
-            "--output", str(base_path) + ".%(ext)s",
-            "--write-thumbnail",
-            "--convert-thumbnails", "jpg",
-            "--cookies", "/mnt/data/cookies.txt",
-            "--user-agent", FIXED_USER_AGENT,
+           "--output", str(base_path) + ".%(ext)s",
+          "--write-thumbnail",
+          "--convert-thumbnails", "jpg",
+          "--cookies", "/mnt/data/cookies.txt",
+           "--user-agent", FIXED_USER_AGENT,
+          '--extractor-args', 'youtube:player_client=web',
             video_url
-        ], check=True)
+             ], check=True)
 
         if not audio_path.exists() or not thumb_path.exists():
             logging.error(f"Missing audio or thumbnail for {channel}")
