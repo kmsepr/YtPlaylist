@@ -11,31 +11,17 @@ from datetime import datetime
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Interval settings
-REFRESH_INTERVAL = 1200       # 20 minutes
-RECHECK_INTERVAL = 3600       # 60 minutes
-EXPIRE_AGE = 7200             # 2 hours
-
-# Fixed user agent
+REFRESH_INTERVAL = 1200
+RECHECK_INTERVAL = 3600
+EXPIRE_AGE = 7200
 FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 CHANNELS = {
-
-"kasranker": "https://youtube.com/@kasrankerofficial/videos",
-
-"academis": "https://youtube.com/@academispsc/videos",
-
- "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
-
-     "talent": "https://youtube.com/@talentacademyonline/videos",
-
-   
+    "kasranker": "https://youtube.com/@kasrankerofficial/videos",
+    "academis": "https://youtube.com/@academispsc/videos",
+    "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
+    "talent": "https://youtube.com/@talentacademyonline/videos",
     "entri": "https://youtube.com/@entriapp/videos",
-    
-    
-
-    
-    
 }
 
 VIDEO_CACHE = {
@@ -72,7 +58,7 @@ def fetch_latest_video_url(name, channel_url):
 def format_upload_month(upload_date):
     try:
         dt = datetime.strptime(upload_date, "%Y%m%d")
-        return dt.strftime("%B %Y")  # e.g., "April 2025"
+        return dt.strftime("%B %Y")
     except Exception:
         return "Unknown"
 
@@ -88,18 +74,18 @@ def download_and_convert(channel, video_url):
         audio_path = base_path.with_suffix(".webm")
         thumb_path = base_path.with_suffix(".jpg")
 
-        # Download best audio and thumbnail
+        # Download audio with SABR-safe fallback
         subprocess.run([
-           "yt-dlp",
-            "-f", "bestaudio",
-           "--output", str(base_path) + ".%(ext)s",
-          "--write-thumbnail",
-          "--convert-thumbnails", "jpg",
-          "--cookies", "/mnt/data/cookies.txt",
-           "--user-agent", FIXED_USER_AGENT,
-          '--extractor-args', 'youtube:player_client=web',
+            "yt-dlp",
+            "-f", "ba[ext=m4a]/ba[ext=mp4]/ba/140/251/bestaudio",
+            "--output", str(base_path) + ".%(ext)s",
+            "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
+            "--cookies", "/mnt/data/cookies.txt",
+            "--user-agent", FIXED_USER_AGENT,
+            "--extractor-args", "youtube:player_client=web",
             video_url
-             ], check=True)
+        ], check=True)
 
         if not audio_path.exists() or not thumb_path.exists():
             logging.error(f"Missing audio or thumbnail for {channel}")
@@ -135,6 +121,11 @@ def download_and_convert(channel, video_url):
         return final_path if final_path.exists() else None
     except Exception as e:
         logging.error(f"Error converting {channel}: {e}")
+        # Optional: List formats to debug SABR block
+        subprocess.run([
+            "yt-dlp", "--list-formats", "--cookies", "/mnt/data/cookies.txt",
+            "--user-agent", FIXED_USER_AGENT, video_url
+        ])
         partial = final_path.with_suffix(".mp3.part")
         if partial.exists():
             partial.unlink()
@@ -316,6 +307,7 @@ def index():
     </html>
     """
     return html
+
 threading.Thread(target=update_video_cache_loop, daemon=True).start()
 threading.Thread(target=auto_download_mp3s, daemon=True).start()
 threading.Thread(target=cleanup_old_files, daemon=True).start()
