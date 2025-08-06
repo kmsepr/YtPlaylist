@@ -13,10 +13,8 @@ logging.basicConfig(level=logging.INFO)
 TMP_DIR = Path("/tmp/ytmp3")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Set a fixed user-agent and yt-dlp client
 FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
-# Replace with your own video links and channel names
 YOUTUBE_STREAMS = {
     "kasranker": "https://www.youtube.com/watch?v=-jAQvE4idrE",
     "academis": "https://www.youtube.com/watch?v=Jo63QxF__Oc",
@@ -60,7 +58,7 @@ def download_and_convert(channel, video_url):
         video_path = base_path.with_suffix(".mp4")
         thumb_path = base_path.with_suffix(".jpg")
 
-        # Download fallback video+audio (format 18)
+        # Force format 18 (360p MP4 with audio)
         subprocess.run([
             "yt-dlp",
             "-f", "18",
