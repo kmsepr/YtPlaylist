@@ -14,33 +14,39 @@ app = Flask(__name__)
 
 COOKIES_FILE = "/mnt/data/cookies.txt"
 PLAYLIST_FILE = "playlists.json"
-os.makedirs("cache", exist_ok=True)
-
+CACHE_DIR = "cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # -----------------------------------------------------
 # PLAYLIST STORAGE
 # -----------------------------------------------------
 def load_playlists():
+    """Load saved playlists"""
     if os.path.exists(PLAYLIST_FILE):
-        with open(PLAYLIST_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(PLAYLIST_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 def save_playlists(data):
+    """Save playlists persistently"""
     with open(PLAYLIST_FILE, "w") as f:
         json.dump(data, f, indent=2)
-
 
 # -----------------------------------------------------
 # ADD / FETCH PLAYLISTS
 # -----------------------------------------------------
 def add_playlist(name, url):
+    """Add new playlist"""
     data = load_playlists()
     data[name] = url
     save_playlists(data)
-    logging.info(f"✅ Added playlist '{name}': {url}")
+    logging.info(f"✅ Added playlist '{name}' -> {url}")
 
 def get_playlist_videos(playlist_url):
+    """Fetch all videos from a YouTube playlist"""
     ydl_opts = {
         "quiet": True,
         "extract_flat": True,
@@ -52,47 +58,49 @@ def get_playlist_videos(playlist_url):
             entries = info.get("entries", [])
             return [f"https://www.youtube.com/watch?v={e['id']}" for e in entries if e.get("id")]
     except Exception as e:
-        logging.error(f"Failed to load playlist {playlist_url}: {e}")
+        logging.error(f"Failed to load playlist: {e}")
         return []
 
-
 # -----------------------------------------------------
-# STREAM GENERATOR (continuous play)
+# STREAM GENERATOR (Continuous YouTube Audio)
 # -----------------------------------------------------
 def generate_stream(playlist_url):
     videos = get_playlist_videos(playlist_url)
     if not videos:
+        logging.warning(f"No videos found for {playlist_url}")
         yield b""
         return
 
-    for url in videos:
-        logging.info(f"🎧 Streaming: {url}")
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio[ext=m4a]/bestaudio/best",
-            "--no-playlist",
-            "--cookies", COOKIES_FILE if os.path.exists(COOKIES_FILE) else "",
-            "-o", "-",
-            url
-        ]
-        try:
-            proc = subprocess.Popen(
-                [c for c in cmd if c],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL
-            )
-            while True:
-                chunk = proc.stdout.read(1024)
-                if not chunk:
-                    break
-                yield chunk
-        except Exception as e:
-            logging.error(f"Stream error: {e}")
-        finally:
-            if proc:
-                proc.kill()
-        time.sleep(1)
+    while True:  # loop continuously
+        for url in videos:
+            logging.info(f"🎧 Streaming: {url}")
+            cmd = [
+                "yt-dlp",
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "--no-playlist",
+                "-o", "-",
+                url
+            ]
+            if os.path.exists(COOKIES_FILE):
+                cmd.extend(["--cookies", COOKIES_FILE])
 
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL
+                )
+                while True:
+                    chunk = proc.stdout.read(1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            except Exception as e:
+                logging.error(f"Stream error: {e}")
+            finally:
+                if proc:
+                    proc.kill()
+            time.sleep(1)
 
 # -----------------------------------------------------
 # ROUTES
@@ -114,6 +122,7 @@ def home():
                 li { background: #111; padding: 10px; border-radius: 8px; margin: 8px; }
                 audio { width: 90%; margin-top: 10px; }
                 .urlbox { background: #111; margin-top: 15px; padding: 10px; border-radius: 8px; word-break: break-all; }
+                a { color: #0f0; text-decoration: none; }
             </style>
         </head>
         <body>
@@ -130,9 +139,11 @@ def home():
                 <li>
                     <b>{{ name }}</b><br>
                     {{ url }}<br>
-                    🔗 <a href="/playlist/{{name}}.mp3" target="_blank" style="color:#0f0;">{{ request.url_root }}playlist/{{name}}.mp3</a><br>
+                    🔗 <a href="/playlist/{{name}}.mp3" target="_blank">{{ request.url_root }}playlist/{{name}}.mp3</a><br>
                     ▶️ <audio controls src="/playlist/{{name}}.mp3"></audio>
                 </li>
+            {% else %}
+                <p>No playlists yet. Add one above 👆</p>
             {% endfor %}
             </ul>
         </body>
@@ -154,8 +165,9 @@ def playlist_stream(name):
     playlists = load_playlists()
     if name not in playlists:
         return f"Playlist '{name}' not found", 404
-    return Response(generate_stream(playlists[name]), mimetype="audio/mpeg")
-
+    playlist_url = playlists[name]
+    logging.info(f"Starting stream for '{name}' ({playlist_url})")
+    return Response(generate_stream(playlist_url), mimetype="audio/mpeg")
 
 # -----------------------------------------------------
 # MAIN
