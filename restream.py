@@ -122,16 +122,11 @@ def ensure_auto_playlist_loaded():
                 print(f"Loaded {len(items)} items from auto playlist.")
 
 
+@app.before_serving
 def init_auto_playlist():
-    """Initialize auto playlist on startup."""
+    """Initialize auto playlist when app starts serving."""
     if AUTO_PLAYLIST_URL:
         ensure_auto_playlist_loaded()
-
-# compatible with Flask 3.x
-if hasattr(app, "before_serving"):
-    app.before_serving(init_auto_playlist)
-else:
-    app.before_first_request(init_auto_playlist)
 
 # ----------------------------
 # Routes
