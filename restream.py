@@ -1,12 +1,9 @@
 import os
-import time
 import json
-import threading
+import time
 import logging
 import subprocess
-from collections import deque
-from flask import Flask, Response, abort
-from logging.handlers import RotatingFileHandler
+from flask import Flask, Response, abort, render_template_string
 
 # -----------------------------
 # CONFIG & LOGGING
@@ -14,11 +11,10 @@ from logging.handlers import RotatingFileHandler
 LOG_PATH = "/mnt/data/radio.log"
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), handler]
+    handlers=[logging.StreamHandler()]
 )
 
 app = Flask(__name__)
@@ -30,8 +26,6 @@ PLAYLISTS = {
     "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
     "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
-
-STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
 # -----------------------------
 # CACHE
@@ -57,10 +51,9 @@ CACHE = load_cache()
 # -----------------------------
 # LOAD PLAYLIST
 # -----------------------------
-def load_playlist(name, force=False):
-    now = time.time()
+def load_playlist(name):
     cached = CACHE.get(name, {})
-    if not force and cached and now - cached.get("time", 0) < 1800:
+    if cached and time.time() - cached.get("time", 0) < 1800:
         logging.info(f"[{name}] Using cached playlist ({len(cached['videos'])} videos)")
         return cached["videos"]
 
@@ -73,7 +66,7 @@ def load_playlist(name, force=False):
         )
         data = json.loads(result.stdout)
         videos = [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get("entries", [])]
-        CACHE[name] = {"videos": videos, "time": now}
+        CACHE[name] = {"videos": videos, "time": time.time()}
         save_cache(CACHE)
         logging.info(f"[{name}] Loaded {len(videos)} videos successfully")
         return videos
@@ -82,9 +75,10 @@ def load_playlist(name, force=False):
         return cached.get("videos", [])
 
 # -----------------------------
-# PRELOAD AND STREAM
+# STREAM/DOWNLOAD ON DEMAND
 # -----------------------------
 def get_direct_audio_url(video_url):
+    """Resolve direct audio URL using yt-dlp."""
     try:
         result = subprocess.run(
             ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "-g", video_url, "--cookies", COOKIES_PATH],
@@ -95,94 +89,67 @@ def get_direct_audio_url(video_url):
         logging.warning(f"Failed to get direct URL: {video_url} -> {e}")
         return None
 
-def stream_worker(name):
-    stream = STREAMS[name]
-    failed_videos = set()
-    fail_count = 0
-
-    while True:
-        try:
-            # Reload playlist if empty
-            if not stream["VIDEOS"]:
-                logging.info(f"[{name}] Playlist empty, loading...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
-
-            # Auto-refresh every 30 min
-            if time.time() - stream["LAST_REFRESH"] > 1800:
-                logging.info(f"[{name}] Auto-refreshing playlist...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
-                stream["LAST_REFRESH"] = time.time()
-
-            # Pick next video, skip failed ones
-            for _ in range(len(stream["VIDEOS"])):
-                url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
-                stream["INDEX"] += 1
-                if url not in failed_videos:
-                    break
-            else:
-                # All failed, refresh next loop
-                continue
-
-            logging.info(f"[{name}] ▶️ Preloading: {url}")
-            direct_url = get_direct_audio_url(url)
-            if not direct_url:
-                logging.warning(f"[{name}] Failed to resolve direct URL, skipping...")
-                failed_videos.add(url)
-                continue
-
-            # Stream the audio
-            cmd = ["ffmpeg", "-i", direct_url, "-f", "mp3", "-vn", "pipe:1"]
-            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-                for chunk in iter(lambda: proc.stdout.read(4096), b""):
-                    if chunk:
-                        stream["QUEUE"].append(chunk)
-
-            logging.info(f"[{name}] Track finished")
-            fail_count = 0
-
-        except Exception as e:
-            logging.error(f"[{name}] Worker error: {e}", exc_info=True)
-            time.sleep(5)
-
-# -----------------------------
-# STREAM ENDPOINT
-# -----------------------------
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS:
+@app.route("/stream/<name>/<int:index>")
+def stream_audio(name, index):
+    if name not in PLAYLISTS:
         abort(404)
-    stream = STREAMS[name]
+
+    videos = load_playlist(name)
+    if index < 0 or index >= len(videos):
+        abort(404)
+
+    url = videos[index]
+    logging.info(f"[{name}] Streaming on-demand: {url}")
+
+    direct_url = get_direct_audio_url(url)
+    if not direct_url:
+        abort(500, description="Failed to resolve video")
+
+    # Use FFmpeg to stream as MP3
+    cmd = ["ffmpeg", "-i", direct_url, "-f", "mp3", "-vn", "pipe:1"]
 
     def generate():
-        while True:
-            if stream["QUEUE"]:
-                yield stream["QUEUE"].popleft()
-            else:
-                time.sleep(0.1)
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+            for chunk in iter(lambda: proc.stdout.read(4096), b""):
+                if chunk:
+                    yield chunk
 
     return Response(generate(), content_type="audio/mpeg")
 
+# -----------------------------
+# SIMPLE HOME
+# -----------------------------
+HOME_HTML = """
+<!DOCTYPE html>
+<html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Downloader</title>
+<style>
+body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
+a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
+    margin:10px; border-radius:10px; text-decoration:none; }
+</style>
+</head>
+<body>
+<h2>🎧 YouTube Download</h2>
+{% for name, videos in playlists.items() %}
+<h3>{{name}}</h3>
+{% for idx, vid in enumerate(videos) %}
+<a href="/stream/{{name}}/{{idx}}">▶️ Download Track {{idx+1}}</a>
+{% endfor %}
+{% endfor %}
+</body>
+</html>
+"""
+
 @app.route("/")
 def home():
-    return "<h2>🎧 YouTube Continuous Radio</h2><p>Use /stream/<name> to listen.</p>"
+    playlists = {name: load_playlist(name) for name in PLAYLISTS}
+    return render_template_string(HOME_HTML, playlists=playlists)
 
 # -----------------------------
 # MAIN
 # -----------------------------
 if __name__ == "__main__":
-    for name in PLAYLISTS:
-        STREAMS[name] = {
-            "VIDEOS": load_playlist(name),
-            "INDEX": 0,
-            "QUEUE": deque(),
-            "LOCK": threading.Lock(),
-            "LAST_REFRESH": time.time(),
-        }
-        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
-
-    logging.info("🎧 Multi-Playlist YouTube Radio started!")
+    logging.info("🎧 YouTube Downloader Server started!")
     app.run(host="0.0.0.0", port=5000)
