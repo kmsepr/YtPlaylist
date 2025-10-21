@@ -5,7 +5,7 @@ import threading
 import logging
 import subprocess
 from collections import deque
-from flask import Flask, Response, render_template_string, abort
+from flask import Flask, Response, render_template_string, abort, stream_with_context
 from logging.handlers import RotatingFileHandler
 
 # -----------------------------
@@ -67,7 +67,7 @@ PLAYER_HTML = """
 </head>
 <body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
 <h3>🎶 {{name|capitalize}} Radio</h3>
-<audio controls autoplay src="/stream/{{name}}" style="width:90%"></audio>
+<a href="/stream/{{name}}" style="color:#0f0;font-size:18px;">⬇️ Download MP3</a>
 <p>YouTube Playlist</p>
 </body>
 </html>
@@ -204,6 +204,7 @@ def stream_worker(name):
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
             time.sleep(5)
+
 # -----------------------------
 # FLASK ROUTES
 # -----------------------------
@@ -219,7 +220,14 @@ def stream_audio(name):
                 yield stream["QUEUE"].popleft()
             else:
                 time.sleep(0.1)
-    return Response(generate(), content_type="audio/mpeg")
+
+    # Force download as mp3
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Content-Disposition": f'attachment; filename="{name}.mp3"'
+    }
+
+    return Response(stream_with_context(generate()), headers=headers)
 
 @app.route("/")
 def home():
