@@ -3,129 +3,143 @@ import time
 import threading
 import logging
 import subprocess
+import json
 from flask import Flask, Response, render_template_string
 
-# --------------------------------------------
-# Logging & App Setup
-# --------------------------------------------
+# -----------------------
+# CONFIG & LOGGING
+# -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
-YOUTUBE_PLAYLIST = os.getenv(
-    "YOUTUBE_PLAYLIST",
-    "https://youtube.com/playlist?list=PLn3BMOY0H7UtVBWbP963mAYdmbRD8YbCi"
-)
-COOKIES_PATH = os.getenv("COOKIES_PATH", "/mnt/data/cookies.txt")
-PORT = int(os.getenv("PORT", 5000))
+PLAYLIST_URL = "https://youtube.com/playlist?list=PLn3BMOY0H7UtVBWbP963mAYdmbRD8YbCi"
+COOKIES_PATH = "/mnt/data/cookies.txt"
+VIDEOS = []
+CURRENT_INDEX = 0
+LOCK = threading.Lock()
 
-playlist_videos = []
-current_index = 0
-playlist_lock = threading.Lock()
+# -----------------------
+# HTML UI
+# -----------------------
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Restream</title>
+<style>
+body { font-family: sans-serif; text-align: center; background: #000; color: #0f0; margin: 0; padding: 1em; }
+audio { width: 90%; margin-top: 20px; }
+button { background: #0f0; color: #000; border: none; padding: 10px 20px; margin: 10px; border-radius: 8px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h2>🎧 YouTube Continuous Restream</h2>
+<p id="status">Loading stream...</p>
+<audio id="player" controls autoplay></audio>
+<script>
+async function startStream() {
+  const player = document.getElementById('player');
+  const status = document.getElementById('status');
+  while (true) {
+    try {
+      player.src = '/stream?nocache=' + Date.now();
+      player.play();
+      status.innerText = '🎵 Playing live audio...';
+      await new Promise(r => player.onended = r);
+    } catch(e) {
+      status.innerText = '⚠️ Reconnecting...';
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+}
+startStream();
+</script>
+</body>
+</html>
+"""
 
-# --------------------------------------------
-# Playlist Handling
-# --------------------------------------------
+# -----------------------
+# LOAD PLAYLIST
+# -----------------------
 def load_playlist():
-    """Fetch YouTube playlist items using yt-dlp"""
-    global playlist_videos
-    logging.info("Loading playlist: %s", YOUTUBE_PLAYLIST)
+    global VIDEOS
     try:
+        logging.info(f"Loading playlist: {PLAYLIST_URL}")
         result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "--cookies", COOKIES_PATH, "-J", YOUTUBE_PLAYLIST],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
+            [
+                "yt-dlp", "--flat-playlist", "-J", PLAYLIST_URL,
+                "--cookies", COOKIES_PATH
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
-        import json
         data = json.loads(result.stdout)
-        entries = data.get("entries", [])
-        playlist_videos = [f"https://www.youtube.com/watch?v={e['id']}" for e in entries if "id" in e]
-        logging.info("Loaded %d videos from playlist", len(playlist_videos))
+        VIDEOS = [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get("entries", [])]
+        logging.info(f"Loaded {len(VIDEOS)} videos from playlist")
     except Exception as e:
-        logging.error("Failed to load playlist: %s", e)
+        logging.error(f"Failed to load playlist: {e}")
+        VIDEOS = []
 
+# -----------------------
+# GET NEXT VIDEO
+# -----------------------
 def get_next_video():
-    """Return next video URL from the playlist"""
-    global current_index
-    with playlist_lock:
-        if not playlist_videos:
+    global CURRENT_INDEX
+    with LOCK:
+        if not VIDEOS:
             load_playlist()
-        if not playlist_videos:
+        if not VIDEOS:
+            logging.warning("No videos to play.")
             return None
-        url = playlist_videos[current_index]
-        current_index = (current_index + 1) % len(playlist_videos)
+        url = VIDEOS[CURRENT_INDEX % len(VIDEOS)]
+        CURRENT_INDEX += 1
         return url
 
-# --------------------------------------------
-# Audio Streamer
-# --------------------------------------------
-def stream_youtube_audio(url):
-    """Stream audio from YouTube using yt-dlp + ffmpeg"""
-    logging.info("Streaming: %s", url)
-    ytdlp_cmd = [
-        "yt-dlp", "-f", "bestaudio", "--cookies", COOKIES_PATH,
-        "-o", "-", url
-    ]
-    ffmpeg_cmd = [
-        "ffmpeg", "-i", "pipe:0", "-f", "mp3", "-acodec", "libmp3lame",
-        "-ab", "128k", "-content_type", "audio/mpeg", "-"
-    ]
-    ytdlp = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=ytdlp.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    ytdlp.stdout.close()
-    return ffmpeg.stdout
-
-# --------------------------------------------
-# Flask Routes
-# --------------------------------------------
-@app.route("/")
-def index():
-    return render_template_string("""
-        <html>
-        <head><title>YouTube Playlist Radio</title></head>
-        <body style="text-align:center; font-family:sans-serif;">
-            <h2>🎧 YouTube Playlist Radio</h2>
-            <audio controls autoplay src="/stream" style="width:90%;"></audio>
-            <p>Streaming from:<br><b>{{ playlist }}</b></p>
-        </body>
-        </html>
-    """, playlist=YOUTUBE_PLAYLIST)
-
+# -----------------------
+# STREAM ENDPOINT
+# -----------------------
 @app.route("/stream")
 def stream():
-    """Continuously stream all videos in playlist"""
+    url = get_next_video()
+    if not url:
+        return "No videos available", 503
+
+    logging.info(f"Streaming: {url}")
+    # Use ffmpeg for audio-only
+    process = subprocess.Popen(
+        ["yt-dlp", "-f", "bestaudio", "-o", "-", url, "--cookies", COOKIES_PATH, "--quiet"],
+        stdout=subprocess.PIPE
+    )
+
     def generate():
         while True:
-            video = get_next_video()
-            if not video:
-                logging.warning("No videos to play.")
-                time.sleep(15)
-                continue
-            try:
-                ffmpeg_out = stream_youtube_audio(video)
-                for chunk in iter(lambda: ffmpeg_out.read(4096), b""):
-                    yield chunk
-            except Exception as e:
-                logging.error("Error streaming %s: %s", video, e)
-                continue
-    return Response(generate(), mimetype="audio/mpeg")
+            chunk = process.stdout.read(1024)
+            if not chunk:
+                break
+            yield chunk
+        process.kill()
 
-# --------------------------------------------
-# Startup Hook (Flask version agnostic)
-# --------------------------------------------
-def init_on_startup():
-    threading.Thread(target=load_playlist, daemon=True).start()
+    return Response(generate(), content_type="audio/mpeg")
 
-if hasattr(app, "before_serving"):
-    app.before_serving(init_on_startup)
-elif hasattr(app, "before_first_request"):
-    app.before_first_request(init_on_startup)
-else:
-    init_on_startup()  # fallback if neither exists
+# -----------------------
+# HOME PAGE
+# -----------------------
+@app.route("/")
+def home():
+    return render_template_string(HTML_TEMPLATE)
 
-# --------------------------------------------
-# Run App
-# --------------------------------------------
+# -----------------------
+# BACKGROUND REFRESH
+# -----------------------
+def playlist_refresher():
+    while True:
+        load_playlist()
+        time.sleep(1800)  # refresh every 30 minutes
+
+# -----------------------
+# MAIN
+# -----------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    threading.Thread(target=playlist_refresher, daemon=True).start()
+    load_playlist()
+    app.run(host="0.0.0.0", port=5000)
