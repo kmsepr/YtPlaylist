@@ -127,42 +127,88 @@ STREAM WORKER
 -----------------------------
 
 def stream_worker(name):
-stream = STREAMS[name]
-while True:
-try:
-if not stream["VIDEOS"]:
-stream["VIDEOS"] = load_playlist(name, force=True)
-if not stream["VIDEOS"]:
-logging.warning(f"[{name}] No videos available, retrying in 60s...")
-time.sleep(60)
-continue
+    stream = STREAMS[name]
+    failed_videos = set()
+    fail_count = 0
 
-if time.time() - stream["LAST_REFRESH"] > 1800:  
-            logging.info(f"[{name}] Auto-refreshing playlist...")  
-            stream["VIDEOS"] = load_playlist(name, force=True)  
-            stream["LAST_REFRESH"] = time.time()  
+    while True:
+        try:
+            # Reload playlist if empty
+            if not stream["VIDEOS"]:
+                logging.info(f"[{name}] Playlist empty, loading...")
+                stream["VIDEOS"] = load_playlist(name, force=True)
+                stream["INDEX"] = 0
+                failed_videos.clear()
 
-        url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]  
-        stream["INDEX"] += 1  
-        logging.info(f"[{name}] ▶️ Now streaming: {url}")  
+            # Skip if all videos failed
+            if len(failed_videos) >= len(stream["VIDEOS"]):
+                logging.info(f"[{name}] All videos failed, refreshing playlist...")
+                stream["VIDEOS"] = load_playlist(name, force=True)
+                stream["INDEX"] = 0
+                failed_videos.clear()
 
-        cmd = [  
-            "yt-dlp", "-f", "bestaudio", "-o", "-", url,  
-            "--cookies", COOKIES_PATH, "--quiet", "--no-warnings"  
-        ]  
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:  
-            for chunk in iter(lambda: proc.stdout.read(4096), b""):  
-                if chunk:  
-                    stream["QUEUE"].append(chunk)  
-                else:  
-                    break  
-            err = proc.stderr.read().strip()  
-            if err:  
-                logging.warning(f"[{name}] yt-dlp stderr: {err[:400]}")  
-        logging.info(f"[{name}] Track finished, moving to next...")  
-    except Exception as e:  
-        logging.error(f"[{name}] Worker error: {e}", exc_info=True)  
-        time.sleep(5)
+            # Auto-refresh every 30 min
+            if time.time() - stream["LAST_REFRESH"] > 1800:
+                logging.info(f"[{name}] Auto-refreshing playlist...")
+                stream["VIDEOS"] = load_playlist(name, force=True)
+                stream["INDEX"] = 0
+                failed_videos.clear()
+                stream["LAST_REFRESH"] = time.time()
+
+            # Pick next video, skip previously failed ones
+            for _ in range(len(stream["VIDEOS"])):
+                url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
+                stream["INDEX"] += 1
+                if url not in failed_videos:
+                    break
+            else:
+                # All videos failed, force refresh next loop
+                continue
+
+            logging.info(f"[{name}] ▶️ Now streaming: {url}")
+
+            # yt-dlp command
+            cmd = [
+                "yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "-o", "-",
+                url,
+                "--cookies", COOKIES_PATH,
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/118.0.0.0 Safari/537.36",
+                "--quiet", "--no-warnings"
+            ]
+
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                for chunk in iter(lambda: proc.stdout.read(4096), b""):
+                    if chunk:
+                        stream["QUEUE"].append(chunk)
+                    else:
+                        break
+
+                # Check for errors
+                err = proc.stderr.read().decode().strip()
+                if err:
+                    logging.warning(f"[{name}] yt-dlp stderr: {err[:400]}")
+                    if "403" in err or "ERROR" in err:
+                        logging.warning(f"[{name}] Video failed, skipping next time")
+                        failed_videos.add(url)
+                        fail_count += 1
+                    else:
+                        fail_count = 0
+                else:
+                    fail_count = 0
+
+            # If multiple consecutive failures, refresh playlist
+            if fail_count >= 3:
+                logging.info(f"[{name}] Multiple consecutive failures, refreshing playlist...")
+                stream["VIDEOS"] = load_playlist(name, force=True)
+                stream["INDEX"] = 0
+                failed_videos.clear()
+                fail_count = 0
+
+        except Exception as e:
+            logging.error(f"[{name}] Worker error: {e}", exc_info=True)
+            time.sleep(5)
 
 -----------------------------
 
