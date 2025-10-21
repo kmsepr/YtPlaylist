@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
-MAX_QUEUE_SIZE = 50  # maximum number of audio chunks to hold in memory
+MAX_QUEUE_SIZE = 100  # chunks
 
 PLAYLISTS = {
     "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
@@ -123,7 +123,7 @@ def load_playlist(name, force=False):
         return cached.get("videos", [])
 
 # -----------------------------
-# STREAM WORKER
+# STREAM WORKER (yt-dlp + FFmpeg)
 # -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
@@ -139,16 +139,9 @@ def stream_worker(name):
                 stream["INDEX"] = 0
                 failed_videos.clear()
                 if not stream["VIDEOS"]:
-                    logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
+                    logging.warning(f"[{name}] Playlist still empty, retrying in 10s...")
                     time.sleep(10)
                     continue
-
-            # Skip if all videos failed
-            if len(failed_videos) >= len(stream["VIDEOS"]):
-                logging.info(f"[{name}] All videos failed, refreshing playlist...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
 
             # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
@@ -158,61 +151,48 @@ def stream_worker(name):
                 failed_videos.clear()
                 stream["LAST_REFRESH"] = time.time()
 
-            # Pick next video, skip failed ones
+            # Pick next video
             for _ in range(len(stream["VIDEOS"])):
                 url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
                 stream["INDEX"] += 1
                 if url not in failed_videos:
                     break
             else:
-                continue  # all videos failed, refresh next loop
+                logging.warning(f"[{name}] All videos failed, retrying in 10s...")
+                time.sleep(10)
+                continue
 
-            logging.info(f"[{name}] ▶️ Now streaming: {url}")
+            logging.info(f"[{name}] ▶️ Streaming: {url}")
 
             if not os.path.exists(COOKIES_PATH):
-                logging.warning(f"[{name}] Cookies file not found, skipping videos requiring login")
+                logging.warning(f"[{name}] Cookies missing, skipping video")
                 failed_videos.add(url)
                 continue
 
-            cmd = [
-                "yt-dlp",
-                "-f", "bestaudio[ext=m4a]/bestaudio",
-                "-o", "-",
-                url,
-                "--cookies", COOKIES_PATH,
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/118.0.0.0 Safari/537.36",
-                "--quiet", "--no-warnings",
-                "--retries", "infinite",
-                "--fragment-retries", "infinite"
-            ]
+            # yt-dlp + ffmpeg to mp3
+            cmd = (
+                f"yt-dlp -f bestaudio[ext=m4a]/bestaudio {url} "
+                f"--cookies {COOKIES_PATH} --quiet --no-warnings -o - | "
+                f"ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1"
+            )
 
-            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-                for chunk in iter(lambda: proc.stdout.read(4096), b""):
-                    if chunk and len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
-                        stream["QUEUE"].append(chunk)
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                # Read stderr safely
-                err = proc.stderr.read().decode().strip()
-                if err:
-                    logging.warning(f"[{name}] yt-dlp stderr: {err[:400]}")
-                    if "Sign in to confirm" in err or "ERROR" in err:
-                        logging.warning(f"[{name}] Video failed due to auth, skipping next time")
-                        failed_videos.add(url)
-                        fail_count += 1
-                    else:
-                        fail_count = 0
-                else:
-                    fail_count = 0
+            # Read chunks
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
+                    stream["QUEUE"].append(chunk)
 
-            # Refresh playlist after multiple consecutive failures
-            if fail_count >= 3:
-                logging.info(f"[{name}] Multiple consecutive failures, refreshing playlist...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
-                fail_count = 0
+            err = proc.stderr.read().decode().strip()
+            if err:
+                logging.warning(f"[{name}] FFmpeg/yt-dlp stderr: {err[:400]}")
+
+            proc.stdout.close()
+            proc.stderr.close()
+            proc.wait()
 
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
@@ -259,6 +239,6 @@ if __name__ == "__main__":
         }
         threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
 
-    logging.info("🎧 Multi-Playlist YouTube Radio started with full logging!")
-    logging.info(f"Logs being written to: {LOG_PATH}")
+    logging.info("🎧 Multi-Playlist YouTube Radio started!")
+    logging.info(f"Logs: {LOG_PATH}")
     app.run(host="0.0.0.0", port=5000)
