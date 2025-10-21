@@ -32,7 +32,7 @@ PLAYLISTS = {
     "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
-STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
+STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
 # -----------------------------
 # HTML TEMPLATES
@@ -83,7 +83,6 @@ def load_cache():
                 return json.load(f)
         except Exception as e:
             logging.error(f"Failed to load cache: {e}")
-            return {}
     return {}
 
 def save_cache(data):
@@ -96,39 +95,37 @@ def save_cache(data):
 CACHE = load_cache()
 
 # -----------------------------
-# LOAD PLAYLIST (filter restricted/private)
+# LOAD PLAYLIST VIDEO IDS
 # -----------------------------
-def load_playlist(name, force=False):
+def load_playlist_ids(name, force=False):
     now = time.time()
     cached = CACHE.get(name, {})
     if not force and cached and now - cached.get("time", 0) < 1800:
-        logging.info(f"[{name}] Using cached playlist ({len(cached['videos'])} videos)")
-        return cached["videos"]
+        logging.info(f"[{name}] Using cached playlist IDs ({len(cached['ids'])} videos)")
+        return cached["ids"]
 
     url = PLAYLISTS[name]
     try:
-        logging.info(f"[{name}] Refreshing playlist...")
+        logging.info(f"[{name}] Refreshing playlist IDs...")
         result = subprocess.run(
             ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
         data = json.loads(result.stdout)
-        # Filter out private or age-restricted videos
-        videos = [
-            f"https://www.youtube.com/watch?v={e['id']}"
-            for e in data.get("entries", [])
+        video_ids = [
+            e["id"] for e in data.get("entries", [])
             if not e.get("private") and e.get("age_limit", 0) == 0
         ]
-        CACHE[name] = {"videos": videos, "time": now}
+        CACHE[name] = {"ids": video_ids, "time": now}
         save_cache(CACHE)
-        logging.info(f"[{name}] Loaded {len(videos)} videos successfully")
-        return videos
+        logging.info(f"[{name}] Loaded {len(video_ids)} video IDs successfully")
+        return video_ids
     except Exception as e:
         logging.error(f"[{name}] Playlist load failed: {e}")
-        return cached.get("videos", [])
+        return cached.get("ids", [])
 
 # -----------------------------
-# STREAM WORKER (yt-dlp + FFmpeg with UA and cookies)
+# STREAM WORKER
 # -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
@@ -136,45 +133,43 @@ def stream_worker(name):
 
     while True:
         try:
-            # Reload playlist if empty
-            if not stream["VIDEOS"]:
+            if not stream["VIDEO_IDS"]:
                 logging.info(f"[{name}] Playlist empty, loading...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
+                stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
                 stream["INDEX"] = 0
                 failed_videos.clear()
-                if not stream["VIDEOS"]:
+                if not stream["VIDEO_IDS"]:
                     logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
                     time.sleep(10)
                     continue
 
             # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
-                logging.info(f"[{name}] Auto-refreshing playlist...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
+                logging.info(f"[{name}] Auto-refreshing playlist IDs...")
+                stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
                 stream["INDEX"] = 0
                 failed_videos.clear()
                 stream["LAST_REFRESH"] = time.time()
 
             # Pick next video
-            for _ in range(len(stream["VIDEOS"])):
-                url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
+            for _ in range(len(stream["VIDEO_IDS"])):
+                vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
                 stream["INDEX"] += 1
-                if url not in failed_videos:
+                if vid not in failed_videos:
                     break
             else:
                 logging.warning(f"[{name}] All videos failed, retrying in 10s...")
                 time.sleep(10)
                 continue
 
+            url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ Streaming: {url}")
 
-            # Check cookies
             if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH) == 0:
                 logging.warning(f"[{name}] Cookies missing or empty, skipping video")
-                failed_videos.add(url)
+                failed_videos.add(vid)
                 continue
 
-            # yt-dlp + ffmpeg command with proper user-agent
             cmd = (
                 f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
                 f'--cookies "{COOKIES_PATH}" '
@@ -195,7 +190,7 @@ def stream_worker(name):
             err = proc.stderr.read().decode().strip()
             if err and "403" in err:
                 logging.warning(f"[{name}] 403 Forbidden detected, skipping video: {url}")
-                failed_videos.add(url)
+                failed_videos.add(vid)
 
             proc.stdout.close()
             proc.stderr.close()
@@ -221,7 +216,6 @@ def stream_audio(name):
             else:
                 time.sleep(0.1)
 
-    # Force download as mp3
     headers = {
         "Content-Type": "audio/mpeg",
         "Content-Disposition": f'attachment; filename="{name}.mp3"'
@@ -245,7 +239,7 @@ def listen(name):
 if __name__ == "__main__":
     for name in PLAYLISTS:
         STREAMS[name] = {
-            "VIDEOS": load_playlist(name),
+            "VIDEO_IDS": load_playlist_ids(name),
             "INDEX": 0,
             "QUEUE": deque(),
             "LOCK": threading.Lock(),
