@@ -12,10 +12,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 app = Flask(__name__)
 
 YOUTUBE_PLAYLIST = os.getenv("YOUTUBE_PLAYLIST", "https://youtube.com/playlist?list=PLn3BMOY0H7UtVBWbP963mAYdmbRD8YbCi")
-COOKIES_PATH = os.getenv("COOKIES_PATH", "data/mnt/cookies.txt")
-PORT = int(os.getenv("PORT", 5000))
-
-# --------------------------------------------
+COOKIES_PATH = os.getenv("COOKIES_PATH", "/mnt/data/cookies.txt")
+PORT = int(os.getenv("PORT", 5000)) --------------------------------------------
 # Stream Queue
 # --------------------------------------------
 playlist_videos = []
