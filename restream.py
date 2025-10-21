@@ -4,17 +4,18 @@ import threading
 import logging
 import subprocess
 import json
-from flask import Flask, Response, render_template_string, request, redirect
+from flask import Flask, Response, render_template_string
 
 # -----------------------
-# CONFIG
+# CONFIG & LOGGING
 # -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
+PLAYLIST_URL = "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE"
 COOKIES_PATH = "/mnt/data/cookies.txt"
-PLAYLISTS_FILE = "playlists.json"
-PLAYLISTS = {}
+VIDEOS = []
+CURRENT_INDEX = 0
 LOCK = threading.Lock()
 
 # -----------------------
@@ -28,116 +29,117 @@ HTML_TEMPLATE = """
 <title>YouTube Restream</title>
 <style>
 body { font-family: sans-serif; text-align: center; background: #000; color: #0f0; margin: 0; padding: 1em; }
-input, button { padding: 8px; margin: 5px; border-radius: 6px; border: none; }
-button { background: #0f0; color: #000; font-weight: bold; }
-a { color: #0f0; text-decoration: none; display: block; margin: 5px; }
+audio { width: 90%; margin-top: 20px; }
+button { background: #0f0; color: #000; border: none; padding: 10px 20px; margin: 10px; border-radius: 8px; font-weight: bold; }
 </style>
 </head>
 <body>
-<h2>🎧 YouTube Restream</h2>
-<form method="POST" action="/add">
-  <input name="name" placeholder="playlist name" required>
-  <input name="url" placeholder="YouTube playlist URL" required size="40">
-  <button type="submit">➕ Add</button>
-</form>
-<h3>Available Streams</h3>
-{% for name in playlists %}
-  <a href="/playlist/{{ name | urlencode }}.mp3" target="_blank">{{ name }}</a>
-{% endfor %}
+<h2>🎧 YouTube Continuous Restream</h2>
+<p id="status">Loading stream...</p>
+<audio id="player" controls autoplay></audio>
+<script>
+async function startStream() {
+  const player = document.getElementById('player');
+  const status = document.getElementById('status');
+  while (true) {
+    try {
+      player.src = '/stream?nocache=' + Date.now();
+      player.play();
+      status.innerText = '🎵 Playing live audio...';
+      await new Promise(r => player.onended = r);
+    } catch(e) {
+      status.innerText = '⚠️ Reconnecting...';
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+}
+startStream();
+</script>
 </body>
 </html>
 """
 
 # -----------------------
-# LOAD/SAVE PLAYLISTS
+# LOAD PLAYLIST
 # -----------------------
-def load_playlists():
-    global PLAYLISTS
-    if os.path.exists(PLAYLISTS_FILE):
-        with open(PLAYLISTS_FILE, "r") as f:
-            PLAYLISTS = json.load(f)
-    else:
-        PLAYLISTS = {}
-
-def save_playlists():
-    with LOCK:
-        with open(PLAYLISTS_FILE, "w") as f:
-            json.dump(PLAYLISTS, f, indent=2)
-
-# -----------------------
-# PLAYLIST PARSER
-# -----------------------
-def get_videos_from_playlist(url):
+def load_playlist():
+    global VIDEOS
     try:
+        logging.info(f"Loading playlist: {PLAYLIST_URL}")
         result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
+            [
+                "yt-dlp", "--flat-playlist", "-J", PLAYLIST_URL,
+                "--cookies", COOKIES_PATH
+            ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
         data = json.loads(result.stdout)
-        videos = []
-        for e in data.get("entries", []):
-            vid = e.get("id")
-            if vid and not vid.startswith("http"):
-                videos.append(f"https://www.youtube.com/watch?v={vid}")
-            elif vid and vid.startswith("http"):
-                videos.append(vid)
-        return videos
+        VIDEOS = [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get("entries", [])]
+        logging.info(f"Loaded {len(VIDEOS)} videos from playlist")
     except Exception as e:
-        logging.error(f"Failed to load playlist {url}: {e}")
-        return []
+        logging.error(f"Failed to load playlist: {e}")
+        VIDEOS = []
 
 # -----------------------
-# STREAM GENERATOR
+# GET NEXT VIDEO
 # -----------------------
-def stream_playlist(url):
-    videos = get_videos_from_playlist(url)
-    if not videos:
-        yield b""
-        return
-    index = 0
-    while True:
-        video = videos[index % len(videos)]
-        index += 1
-        logging.info(f"🎧 Streaming: {video}")
-        process = subprocess.Popen(
-            ["yt-dlp", "-f", "bestaudio", "-o", "-", video, "--cookies", COOKIES_PATH, "--quiet"],
-            stdout=subprocess.PIPE
-        )
-        for chunk in iter(lambda: process.stdout.read(1024), b""):
+def get_next_video():
+    global CURRENT_INDEX
+    with LOCK:
+        if not VIDEOS:
+            load_playlist()
+        if not VIDEOS:
+            logging.warning("No videos to play.")
+            return None
+        url = VIDEOS[CURRENT_INDEX % len(VIDEOS)]
+        CURRENT_INDEX += 1
+        return url
+
+# -----------------------
+# STREAM ENDPOINT
+# -----------------------
+@app.route("/stream")
+def stream():
+    url = get_next_video()
+    if not url:
+        return "No videos available", 503
+
+    logging.info(f"Streaming: {url}")
+    # Use ffmpeg for audio-only
+    process = subprocess.Popen(
+        ["yt-dlp", "-f", "bestaudio", "-o", "-", url, "--cookies", COOKIES_PATH, "--quiet"],
+        stdout=subprocess.PIPE
+    )
+
+    def generate():
+        while True:
+            chunk = process.stdout.read(1024)
+            if not chunk:
+                break
             yield chunk
         process.kill()
 
+    return Response(generate(), content_type="audio/mpeg")
+
 # -----------------------
-# ROUTES
+# HOME PAGE
 # -----------------------
 @app.route("/")
 def home():
-    return render_template_string(HTML_TEMPLATE, playlists=list(PLAYLISTS.keys()))
+    return render_template_string(HTML_TEMPLATE)
 
-@app.route("/add", methods=["POST"])
-def add_playlist():
-    name = request.form.get("name", "").strip()
-    url = request.form.get("url", "").strip()
-    if not name or not url:
-        return redirect("/")
-    PLAYLISTS[name] = url
-    save_playlists()
-    logging.info(f"✅ Added playlist '{name}' -> {url}")
-    return redirect("/")
-
-@app.route("/playlist/<path:name>.mp3")
-def playlist_stream(name):
-    name = name.replace("%20", " ")
-    url = PLAYLISTS.get(name)
-    if not url:
-        logging.warning(f"❌ Playlist '{name}' not found")
-        return "Playlist not found", 404
-    logging.info(f"▶️ Starting stream for '{name}' ({url})")
-    return Response(stream_playlist(url), content_type="audio/mpeg")
+# -----------------------
+# BACKGROUND REFRESH
+# -----------------------
+def playlist_refresher():
+    while True:
+        load_playlist()
+        time.sleep(1800)  # refresh every 30 minutes
 
 # -----------------------
 # MAIN
 # -----------------------
 if __name__ == "__main__":
-    load_playlists()
+    threading.Thread(target=playlist_refresher, daemon=True).start()
+    load_playlist()
     app.run(host="0.0.0.0", port=5000)
