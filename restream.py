@@ -1,176 +1,146 @@
 import os
 import json
+import random
+import subprocess
+import threading
 import time
 import logging
-import subprocess
-from flask import Flask, Response, request, render_template_string, redirect
-import yt_dlp
+from flask import Flask, Response, request, redirect, render_template_string, abort
 
-# -----------------------------------------------------
-# CONFIG & LOGGING
-# -----------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
-COOKIES_FILE = "/mnt/data/cookies.txt"
-PLAYLIST_FILE = "playlists.json"
-CACHE_DIR = "cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
+COOKIES = "/mnt/data/cookies.txt"
+PLAYLISTS_FILE = "playlists.json"
+LOCK = threading.Lock()
 
-# -----------------------------------------------------
-# PLAYLIST STORAGE
-# -----------------------------------------------------
-def load_playlists():
-    """Load saved playlists"""
-    if os.path.exists(PLAYLIST_FILE):
-        try:
-            with open(PLAYLIST_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+# -----------------------------
+# Load saved playlists
+# -----------------------------
+if os.path.exists(PLAYLISTS_FILE):
+    with open(PLAYLISTS_FILE, "r") as f:
+        PLAYLISTS = json.load(f)
+else:
+    PLAYLISTS = {}
 
-def save_playlists(data):
-    """Save playlists persistently"""
-    with open(PLAYLIST_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+# -----------------------------
+# HTML Home
+# -----------------------------
+HTML_HOME = """
+<!doctype html>
+<title>YouTube Playlist Radio</title>
+<h2>🎧 YouTube Playlist Radio</h2>
+<form action="/add" method="post">
+  <input type="text" name="name" placeholder="Name" required>
+  <input type="url" name="url" placeholder="Playlist URL" required>
+  <button type="submit">Add Playlist</button>
+</form>
 
-# -----------------------------------------------------
-# ADD / FETCH PLAYLISTS
-# -----------------------------------------------------
-def add_playlist(name, url):
-    """Add new playlist"""
-    data = load_playlists()
-    data[name] = url
-    save_playlists(data)
-    logging.info(f"✅ Added playlist '{name}' -> {url}")
+<h3>Available Streams</h3>
+<ul>
+{% for name in playlists %}
+  <li><b>{{ name }}</b> — <a href="/playlist/{{ name }}.mp3" target="_blank">🎵 Play Stream</a></li>
+{% endfor %}
+</ul>
+"""
 
-def get_playlist_videos(playlist_url):
-    """Fetch all videos from a YouTube playlist"""
-    ydl_opts = {
-        "quiet": True,
-        "extract_flat": True,
-        "cookies": COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(playlist_url, download=False)
-            entries = info.get("entries", [])
-            return [f"https://www.youtube.com/watch?v={e['id']}" for e in entries if e.get("id")]
-    except Exception as e:
-        logging.error(f"Failed to load playlist: {e}")
-        return []
-
-# -----------------------------------------------------
-# STREAM GENERATOR (Continuous YouTube Audio)
-# -----------------------------------------------------
-def generate_stream(playlist_url):
-    videos = get_playlist_videos(playlist_url)
-    if not videos:
-        logging.warning(f"No videos found for {playlist_url}")
-        yield b""
-        return
-
-    while True:  # loop continuously
-        for url in videos:
-            logging.info(f"🎧 Streaming: {url}")
-            cmd = [
-                "yt-dlp",
-                "-f", "bestaudio[ext=m4a]/bestaudio/best",
-                "--no-playlist",
-                "-o", "-",
-                url
-            ]
-            if os.path.exists(COOKIES_FILE):
-                cmd.extend(["--cookies", COOKIES_FILE])
-
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL
-                )
-                while True:
-                    chunk = proc.stdout.read(1024)
-                    if not chunk:
-                        break
-                    yield chunk
-            except Exception as e:
-                logging.error(f"Stream error: {e}")
-            finally:
-                if proc:
-                    proc.kill()
-            time.sleep(1)
-
-# -----------------------------------------------------
-# ROUTES
-# -----------------------------------------------------
-@app.route("/")
-def home():
-    playlists = load_playlists()
-    return render_template_string("""
-        <html>
-        <head>
-            <title>YouTube Restream Radio</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body { font-family: sans-serif; background: #000; color: #0f0; text-align: center; }
-                input, button { padding: 10px; margin: 5px; border-radius: 8px; border: none; }
-                input { width: 80%; }
-                button { background: #0f0; color: #000; font-weight: bold; }
-                ul { list-style: none; padding: 0; }
-                li { background: #111; padding: 10px; border-radius: 8px; margin: 8px; }
-                audio { width: 90%; margin-top: 10px; }
-                .urlbox { background: #111; margin-top: 15px; padding: 10px; border-radius: 8px; word-break: break-all; }
-                a { color: #0f0; text-decoration: none; }
-            </style>
-        </head>
-        <body>
-            <h2>🎵 YouTube Playlist Radio</h2>
-            <form method="post" action="/add">
-                <input type="text" name="name" placeholder="Short name (e.g. dhruv)" required><br>
-                <input type="url" name="url" placeholder="YouTube Playlist URL" required><br>
-                <button type="submit">➕ Add Playlist</button>
-            </form>
-
-            <h3>📻 Active Playlists</h3>
-            <ul>
-            {% for name, url in playlists.items() %}
-                <li>
-                    <b>{{ name }}</b><br>
-                    {{ url }}<br>
-                    🔗 <a href="/playlist/{{name}}.mp3" target="_blank">{{ request.url_root }}playlist/{{name}}.mp3</a><br>
-                    ▶️ <audio controls src="/playlist/{{name}}.mp3"></audio>
-                </li>
-            {% else %}
-                <p>No playlists yet. Add one above 👆</p>
-            {% endfor %}
-            </ul>
-        </body>
-        </html>
-    """, playlists=playlists)
-
-
+# -----------------------------
+# Add Playlist
+# -----------------------------
 @app.route("/add", methods=["POST"])
-def add_playlist_route():
-    name = request.form.get("name", "").strip().lower()
-    url = request.form.get("url", "").strip()
-    if name and url:
-        add_playlist(name, url)
+def add_playlist():
+    name = request.form.get("name").strip()
+    url = request.form.get("url").strip()
+
+    if not name or not url:
+        abort(400, "Missing name or URL")
+
+    with LOCK:
+        PLAYLISTS[name] = url
+        with open(PLAYLISTS_FILE, "w") as f:
+            json.dump(PLAYLISTS, f, indent=2)
+
+    logging.info(f"✅ Added playlist '{name}' -> {url}")
     return redirect("/")
 
+# -----------------------------
+# Home Page
+# -----------------------------
+@app.route("/")
+def home():
+    return render_template_string(HTML_HOME, playlists=PLAYLISTS)
 
+# -----------------------------
+# Get playlist videos
+# -----------------------------
+def get_videos(playlist_url):
+    cmd = [
+        "yt-dlp", "--flat-playlist", "--dump-json",
+        "--cookies", COOKIES, playlist_url
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    videos = []
+    for line in proc.stdout:
+        try:
+            data = json.loads(line.strip())
+            if "url" in data:
+                videos.append(f"https://www.youtube.com/watch?v={data['url']}")
+        except Exception:
+            pass
+    proc.wait()
+    return videos
+
+# -----------------------------
+# Stream generator
+# -----------------------------
+def stream_playlist(url):
+    videos = get_videos(url)
+    if not videos:
+        logging.error("No videos found.")
+        return
+
+    while True:
+        video = random.choice(videos)
+        logging.info(f"🎧 Streaming: {video}")
+
+        ytdlp_cmd = [
+            "yt-dlp", "-f", "bestaudio", "-o", "-", "--cookies", COOKIES,
+            "--quiet", "--no-warnings", video
+        ]
+        ffmpeg_cmd = [
+            "ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
+            "-f", "mp3", "-b:a", "128k", "pipe:1"
+        ]
+
+        try:
+            ytdlp = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE)
+            ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=ytdlp.stdout, stdout=subprocess.PIPE)
+
+            while True:
+                chunk = ffmpeg.stdout.read(1024)
+                if not chunk:
+                    break
+                yield chunk
+
+            ffmpeg.wait()
+            ytdlp.terminate()
+        except Exception as e:
+            logging.error(f"Error streaming: {e}")
+            time.sleep(5)
+
+# -----------------------------
+# Stream route
+# -----------------------------
 @app.route("/playlist/<name>.mp3")
-def playlist_stream(name):
-    playlists = load_playlists()
-    if name not in playlists:
-        return f"Playlist '{name}' not found", 404
-    playlist_url = playlists[name]
-    logging.info(f"Starting stream for '{name}' ({playlist_url})")
-    return Response(generate_stream(playlist_url), mimetype="audio/mpeg")
+def stream(name):
+    if name not in PLAYLISTS:
+        abort(404, f"Playlist '{name}' not found")
+    playlist_url = PLAYLISTS[name]
+    logging.info(f"▶️ Starting stream for '{name}' ({playlist_url})")
+    return Response(stream_playlist(playlist_url), mimetype="audio/mpeg")
 
-# -----------------------------------------------------
-# MAIN
-# -----------------------------------------------------
+# -----------------------------
+# Run server
+# -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
