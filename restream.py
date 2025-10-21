@@ -112,37 +112,63 @@ def load_playlist(name, force=False):
 # -----------------------------
 # CONTINUOUS STREAM THREAD
 # -----------------------------
+# -----------------------------
+# CONTINUOUS STREAM THREAD WITH FULL LOGGING
+# -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
     while True:
         try:
+            # Load playlist if empty
             if not stream["VIDEOS"]:
+                logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEOS"] = load_playlist(name, force=True)
-
-            if not stream["VIDEOS"]:
-                logging.warning(f"[{name}] No videos to stream, retrying...")
-                time.sleep(60)
-                continue
+                if not stream["VIDEOS"]:
+                    logging.warning(f"[{name}] No videos available after loading, retrying in 60s...")
+                    time.sleep(60)
+                    continue
 
             # Refresh playlist every 30 minutes
             if time.time() - stream["LAST_REFRESH"] > 1800:
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["LAST_REFRESH"] = time.time()
+                logging.info(f"[{name}] Refreshing playlist...")
+                refreshed = load_playlist(name, force=True)
+                if refreshed:
+                    stream["VIDEOS"] = refreshed
+                    stream["LAST_REFRESH"] = time.time()
+                    logging.info(f"[{name}] Playlist refreshed with {len(refreshed)} videos")
+                else:
+                    logging.warning(f"[{name}] Playlist refresh failed, keeping old list")
 
-            url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
+            # Get next video
+            idx = stream["INDEX"] % len(stream["VIDEOS"])
+            url = stream["VIDEOS"][idx]
             stream["INDEX"] += 1
-            logging.info(f"[{name}] Now playing: {url}")
+            logging.info(f"[{name}] Now playing [{idx + 1}/{len(stream['VIDEOS'])}]: {url}")
 
-            cmd = ["yt-dlp", "-f", "bestaudio", "-o", "-", url, "--cookies", COOKIES_PATH, "--quiet"]
-            with subprocess.Popen(cmd, stdout=subprocess.PIPE) as proc:
-                for chunk in iter(lambda: proc.stdout.read(4096), b""):
+            # Start yt-dlp
+            cmd = [
+                "yt-dlp", "-f", "bestaudio", "-o", "-", url,
+                "--cookies", COOKIES_PATH
+            ]
+            logging.info(f"[{name}] Running command: {' '.join(cmd)}")
+
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                while True:
+                    chunk = proc.stdout.read(4096)
                     if chunk:
                         stream["QUEUE"].append(chunk)
                     else:
                         break
-            logging.info(f"[{name}] Track ended, moving to next...")
+
+                # Capture yt-dlp stderr
+                err = proc.stderr.read().decode()
+                if err:
+                    logging.error(f"[{name}] yt-dlp stderr:\n{err}")
+
+            logging.info(f"[{name}] Track finished, moving to next... Queue size: {len(stream['QUEUE'])}")
+
         except Exception as e:
-            logging.error(f"[{name}] Stream worker error: {e}")
+            logging.exception(f"[{name}] Stream worker encountered an exception: {e}")
             time.sleep(5)
 
 # -----------------------------
