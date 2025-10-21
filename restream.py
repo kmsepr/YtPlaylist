@@ -198,7 +198,6 @@ def stream_worker(name):
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
             time.sleep(5)
-
 # -----------------------------
 # STREAM ENDPOINT
 # -----------------------------
