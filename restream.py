@@ -19,7 +19,7 @@ CACHE_FILE = "/mnt/data/playlist_cache.json"
 # Multiple playlists with unique names
 PLAYLISTS = {
     "malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    }
+}
 
 # Holds stream states per playlist
 STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
@@ -86,10 +86,9 @@ CACHE = load_cache()
 # PLAYLIST LOADING
 # -----------------------------
 def load_playlist(name, force=False):
-    """Load or refresh playlist with caching"""
     now = time.time()
     cached = CACHE.get(name, {})
-    if not force and cached and now - cached.get("time", 0) < 1800:  # 30 min cache
+    if not force and cached and now - cached.get("time", 0) < 1800:
         logging.info(f"[{name}] Using cached playlist ({len(cached['videos'])} videos)")
         return cached["videos"]
 
@@ -110,13 +109,13 @@ def load_playlist(name, force=False):
         return cached.get("videos", [])
 
 # -----------------------------
-# CONTINUOUS STREAM THREAD
-# -----------------------------
-# -----------------------------
-# CONTINUOUS STREAM THREAD WITH FULL LOGGING
+# CONTINUOUS STREAM WORKER
 # -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
+    fail_count = 0
+    MAX_FAIL = 3
+
     while True:
         try:
             # Load playlist if empty
@@ -124,7 +123,7 @@ def stream_worker(name):
                 logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEOS"] = load_playlist(name, force=True)
                 if not stream["VIDEOS"]:
-                    logging.warning(f"[{name}] No videos available after loading, retrying in 60s...")
+                    logging.warning(f"[{name}] No videos available, retrying in 60s...")
                     time.sleep(60)
                     continue
 
@@ -143,12 +142,17 @@ def stream_worker(name):
             idx = stream["INDEX"] % len(stream["VIDEOS"])
             url = stream["VIDEOS"][idx]
             stream["INDEX"] += 1
-            logging.info(f"[{name}] Now playing [{idx + 1}/{len(stream['VIDEOS'])}]: {url}")
+            logging.info(f"[{name}] Now playing [{idx+1}/{len(stream['VIDEOS'])}]: {url}")
 
-            # Start yt-dlp
+            # Start yt-dlp with browser-like headers
             cmd = [
-                "yt-dlp", "-f", "bestaudio", "-o", "-", url,
-                "--cookies", COOKIES_PATH
+                "yt-dlp", "-f", "bestaudio", "-o", "-",
+                url,
+                "--cookies", COOKIES_PATH,
+                "--add-header", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/117.0.0.0 Safari/537.36",
+                "--quiet",
             ]
             logging.info(f"[{name}] Running command: {' '.join(cmd)}")
 
@@ -160,15 +164,21 @@ def stream_worker(name):
                     else:
                         break
 
-                # Capture yt-dlp stderr
                 err = proc.stderr.read().decode()
                 if err:
-                    logging.error(f"[{name}] yt-dlp stderr:\n{err}")
+                    logging.warning(f"[{name}] yt-dlp stderr: {err}")
+                    fail_count += 1
+                    if fail_count >= MAX_FAIL:
+                        logging.error(f"[{name}] Skipping video after {fail_count} failures")
+                        fail_count = 0
+                    continue
+                else:
+                    fail_count = 0
 
-            logging.info(f"[{name}] Track finished, moving to next... Queue size: {len(stream['QUEUE'])}")
+            logging.info(f"[{name}] Track finished, queue size: {len(stream['QUEUE'])}")
 
         except Exception as e:
-            logging.exception(f"[{name}] Stream worker encountered an exception: {e}")
+            logging.exception(f"[{name}] Stream worker exception: {e}")
             time.sleep(5)
 
 # -----------------------------
@@ -186,6 +196,7 @@ def stream_audio(name):
                 yield stream["QUEUE"].popleft()
             else:
                 time.sleep(0.1)
+
     return Response(generate(), content_type="audio/mpeg")
 
 @app.route("/")
