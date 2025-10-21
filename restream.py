@@ -11,11 +11,10 @@ from logging.handlers import RotatingFileHandler
 # -----------------------------
 # CONFIG & LOGGING
 # -----------------------------
-
 LOG_PATH = "/mnt/data/radio.log"
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-handler = RotatingFileHandler(LOG_PATH, maxBytes=50*1024*1024, backupCount=3)
+handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -27,31 +26,27 @@ app = Flask(__name__)
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
 
-# -----------------------------
-# PLAYLISTS
-# -----------------------------
 PLAYLISTS = {
-    "P1": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    "P2": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2"
+    "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
+    "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
-STREAMS = {}  # name: {"VIDEOS", "INDEX", "QUEUE", "LOCK", "LAST_REFRESH"}
+STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
 # -----------------------------
 # HTML
 # -----------------------------
 HOME_HTML = """
-<!DOCTYPE html><html>
-<head><meta name="viewport" content="width=device-width, initial-scale=1">
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube Radio</title>
 <style>
 body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
 a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
     margin:10px; border-radius:10px; text-decoration:none; }
-</style>
-</head>
+</style></head>
 <body>
-<h2>🎧 YouTube Continuous Radio</h2>
+<h2>🎧 YouTube Mp3</h2>
 {% for name in playlists %}
 <a href="/listen/{{name}}">▶️ {{name|capitalize}} Radio</a>
 {% endfor %}
@@ -59,13 +54,13 @@ a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
 """
 
 PLAYER_HTML = """
-<!DOCTYPE html><html>
-<head><meta name="viewport" content="width=device-width, initial-scale=1">
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{name|capitalize}} Radio</title></head>
 <body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
 <h3>🎶 {{name|capitalize}} Radio</h3>
 <audio controls autoplay src="/stream/{{name}}" style="width:90%"></audio>
-<p>Continuous playlist stream (MP3 compatible)</p>
+<p>YouTube Playlist</p>
 </body></html>
 """
 
@@ -77,7 +72,7 @@ def load_cache():
         try:
             with open(CACHE_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -122,69 +117,38 @@ def load_playlist(name, force=False):
 # -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
-    failed_videos = set()
-    fail_count = 0
-
     while True:
         try:
-            # Reload playlist if empty
             if not stream["VIDEOS"]:
-                logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
+            if not stream["VIDEOS"]:
+                logging.warning(f"[{name}] No videos available, retrying in 60s...")
+                time.sleep(60)
+                continue
 
-            # Skip if all videos failed
-            if len(failed_videos) >= len(stream["VIDEOS"]):
-                logging.info(f"[{name}] All videos failed, refreshing playlist...")
-                stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
-
-            # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 logging.info(f"[{name}] Auto-refreshing playlist...")
                 stream["VIDEOS"] = load_playlist(name, force=True)
-                stream["INDEX"] = 0
-                failed_videos.clear()
                 stream["LAST_REFRESH"] = time.time()
 
-            # Pick next video, skip failed ones
-            for _ in range(len(stream["VIDEOS"])):
-                url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
-                stream["INDEX"] += 1
-                if url not in failed_videos:
-                    break
-            else:
-                continue
+            url = stream["VIDEOS"][stream["INDEX"] % len(stream["VIDEOS"])]
+            stream["INDEX"] += 1
+            logging.info(f"[{name}] ▶️ Now streaming: {url}")
 
-            logging.info(f"[{name}] ▶️ Streaming: {url}")
-
-            # yt-dlp -> ffmpeg -> MP3 output
             cmd = [
                 "yt-dlp", "-f", "bestaudio", "-o", "-", url,
-                "--cookies", COOKIES_PATH,
-                "--quiet", "--no-warnings",
-                "--no-playlist"
+                "--cookies", COOKIES_PATH, "--quiet", "--no-warnings"
             ]
-            ffmpeg_cmd = [
-                "ffmpeg", "-i", "pipe:0", "-f", "mp3", "-b:a", "128k", "-content_type", "audio/mpeg", "pipe:1"
-            ]
-
-            yt = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            ff = subprocess.Popen(ffmpeg_cmd, stdin=yt.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-            yt.stdout.close()  # Allow yt-dlp to receive SIGPIPE
-            for chunk in iter(lambda: ff.stdout.read(4096), b""):
-                if chunk:
-                    stream["QUEUE"].append(chunk)
-                else:
-                    break
-
-            # Wait and check for errors
-            yt.wait()
-            ff.wait()
-
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                for chunk in iter(lambda: proc.stdout.read(4096), b""):
+                    if chunk:
+                        stream["QUEUE"].append(chunk)
+                    else:
+                        break
+                err = proc.stderr.read().strip()
+                if err:
+                    logging.warning(f"[{name}] yt-dlp stderr: {err[:400]}")
+            logging.info(f"[{name}] Track finished, moving to next...")
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
             time.sleep(5)
@@ -204,7 +168,6 @@ def stream_audio(name):
                 yield stream["QUEUE"].popleft()
             else:
                 time.sleep(0.1)
-
     return Response(generate(), content_type="audio/mpeg")
 
 @app.route("/")
