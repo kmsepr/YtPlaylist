@@ -30,6 +30,8 @@ MAX_QUEUE_SIZE = 100  # chunks
 PLAYLISTS = {
     "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
     "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+
+"Firsts": "https://youtu.be/SuF1x3GrIEI?si=vKW1LFXmdX6IFf0A",
 }
 
 STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
