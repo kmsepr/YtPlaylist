@@ -96,7 +96,7 @@ def save_cache(data):
 CACHE = load_cache()
 
 # -----------------------------
-# LOAD PLAYLIST
+# LOAD PLAYLIST (filter restricted/private)
 # -----------------------------
 def load_playlist(name, force=False):
     now = time.time()
@@ -113,7 +113,12 @@ def load_playlist(name, force=False):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
         data = json.loads(result.stdout)
-        videos = [f"https://www.youtube.com/watch?v={e['id']}" for e in data.get("entries", [])]
+        # Filter out private or age-restricted videos
+        videos = [
+            f"https://www.youtube.com/watch?v={e['id']}"
+            for e in data.get("entries", [])
+            if not e.get("private") and e.get("age_limit", 0) == 0
+        ]
         CACHE[name] = {"videos": videos, "time": now}
         save_cache(CACHE)
         logging.info(f"[{name}] Loaded {len(videos)} videos successfully")
@@ -123,12 +128,11 @@ def load_playlist(name, force=False):
         return cached.get("videos", [])
 
 # -----------------------------
-# STREAM WORKER (yt-dlp + FFmpeg)
+# STREAM WORKER (yt-dlp + FFmpeg with UA and cookies)
 # -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
     failed_videos = set()
-    fail_count = 0
 
     while True:
         try:
@@ -139,7 +143,7 @@ def stream_worker(name):
                 stream["INDEX"] = 0
                 failed_videos.clear()
                 if not stream["VIDEOS"]:
-                    logging.warning(f"[{name}] Playlist still empty, retrying in 10s...")
+                    logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
                     time.sleep(10)
                     continue
 
@@ -164,21 +168,23 @@ def stream_worker(name):
 
             logging.info(f"[{name}] ▶️ Streaming: {url}")
 
-            if not os.path.exists(COOKIES_PATH):
-                logging.warning(f"[{name}] Cookies missing, skipping video")
+            # Check cookies
+            if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH) == 0:
+                logging.warning(f"[{name}] Cookies missing or empty, skipping video")
                 failed_videos.add(url)
                 continue
 
-            # yt-dlp + ffmpeg to mp3
+            # yt-dlp + ffmpeg command with proper user-agent
             cmd = (
-                f"yt-dlp -f bestaudio[ext=m4a]/bestaudio {url} "
-                f"--cookies {COOKIES_PATH} --quiet --no-warnings -o - | "
-                f"ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1"
+                f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
+                f'--cookies "{COOKIES_PATH}" '
+                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
+                f'-o - --quiet --no-warnings | '
+                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
             )
 
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-            # Read chunks
             while True:
                 chunk = proc.stdout.read(4096)
                 if not chunk:
@@ -187,8 +193,9 @@ def stream_worker(name):
                     stream["QUEUE"].append(chunk)
 
             err = proc.stderr.read().decode().strip()
-            if err:
-                logging.warning(f"[{name}] FFmpeg/yt-dlp stderr: {err[:400]}")
+            if err and "403" in err:
+                logging.warning(f"[{name}] 403 Forbidden detected, skipping video: {url}")
+                failed_videos.add(url)
 
             proc.stdout.close()
             proc.stderr.close()
@@ -197,7 +204,6 @@ def stream_worker(name):
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
             time.sleep(5)
-
 # -----------------------------
 # FLASK ROUTES
 # -----------------------------
