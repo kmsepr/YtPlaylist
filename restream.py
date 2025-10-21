@@ -170,16 +170,18 @@ def stream_worker(name):
             logging.info(f"[{name}] ▶️ Now streaming: {url}")
 
             cmd = [
-                "yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "-o", "-",
-                url,
-                "--cookies", COOKIES_PATH,
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/118.0.0.0 Safari/537.36",
-                "--quiet", "--no-warnings",
-                "--retries", "infinite",
-                "--fragment-retries", "infinite"
-            ]
+    "yt-dlp",
+    "-f", "bestaudio[ext=m4a]/bestaudio",
+    "-o", "-",
+    url,
+    "--cookies", COOKIES_PATH,  # must point to your exported cookies
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/118.0.0.0 Safari/537.36",
+    "--quiet", "--no-warnings",
+    "--retries", "infinite",
+    "--fragment-retries", "infinite"
+]
 
             with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
                 for chunk in iter(lambda: proc.stdout.read(4096), b""):
