@@ -27,8 +27,8 @@ COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
 
 PLAYLISTS = {
-    "P1": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    "P2": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+    "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
+    "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
 STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
@@ -46,7 +46,7 @@ a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
     margin:10px; border-radius:10px; text-decoration:none; }
 </style></head>
 <body>
-<h2>🎧 YouTube Continuous Radio</h2>
+<h2>🎧 YouTube Mp3</h2>
 {% for name in playlists %}
 <a href="/listen/{{name}}">▶️ {{name|capitalize}} Radio</a>
 {% endfor %}
@@ -60,7 +60,7 @@ PLAYER_HTML = """
 <body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
 <h3>🎶 {{name|capitalize}} Radio</h3>
 <audio controls autoplay src="/stream/{{name}}" style="width:90%"></audio>
-<p>Continuous playlist stream</p>
+<p>YouTube Playlist</p>
 </body></html>
 """
 
