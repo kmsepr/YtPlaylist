@@ -127,12 +127,16 @@ def load_playlist_ids(name, force=False):
 # -----------------------------
 # STREAM WORKER
 # -----------------------------
+# -----------------------------
+# STREAM WORKER (with yt-dlp -g)
+# -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
     failed_videos = set()
 
     while True:
         try:
+            # Reload playlist if empty
             if not stream["VIDEO_IDS"]:
                 logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
@@ -170,14 +174,28 @@ def stream_worker(name):
                 failed_videos.add(vid)
                 continue
 
-            cmd = (
-                f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
-                f'--cookies "{COOKIES_PATH}" '
-                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
-                f'-o - --quiet --no-warnings | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
-            )
+            # Get direct audio URL via yt-dlp -g
+            try:
+                result = subprocess.run(
+                    [
+                        "yt-dlp",
+                        "-f", "bestaudio[ext=m4a]/bestaudio",
+                        "--cookies", COOKIES_PATH,
+                        "-g", url
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True
+                )
+                audio_url = result.stdout.strip()
+            except subprocess.CalledProcessError as e:
+                logging.warning(f"[{name}] yt-dlp -g failed, skipping video: {url}")
+                failed_videos.add(vid)
+                continue
 
+            # Stream audio via ffmpeg
+            cmd = f'ffmpeg -re -i "{audio_url}" -f mp3 pipe:1 -loglevel quiet'
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             while True:
@@ -186,11 +204,6 @@ def stream_worker(name):
                     break
                 if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
                     stream["QUEUE"].append(chunk)
-
-            err = proc.stderr.read().decode().strip()
-            if err and "403" in err:
-                logging.warning(f"[{name}] 403 Forbidden detected, skipping video: {url}")
-                failed_videos.add(vid)
 
             proc.stdout.close()
             proc.stderr.close()
