@@ -195,7 +195,7 @@ def stream_worker(name):
                 continue
 
             # Stream audio via ffmpeg
-            cmd = f'ffmpeg -re -i "{audio_url}" -f mp3 pipe:1 -loglevel quiet'
+            cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             while True:
