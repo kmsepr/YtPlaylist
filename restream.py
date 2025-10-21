@@ -4,126 +4,192 @@ import time
 import subprocess
 from flask import Flask, Response, request, render_template_string, redirect, url_for
 
-# Config
-COOKIES_PATH = os.environ.get('COOKIES_PATH', '/app/data/mnt/cookies.txt')
-YTDLP_BIN = os.environ.get('YTDLP_BIN', 'yt-dlp')
-FFMPEG_BIN = os.environ.get('FFMPEG_BIN', 'ffmpeg')
-PORT = int(os.environ.get('PORT', 5000))
-AUTO_PLAYLIST_URL = os.environ.get('AUTO_PLAYLIST_URL', None)  # new
+# ----------------------------
+# Configuration
+# ----------------------------
+COOKIES_PATH = os.environ.get("COOKIES_PATH", "/app/data/mnt/cookies.txt")
+YTDLP_BIN = os.environ.get("YTDLP_BIN", "yt-dlp")
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
+PORT = int(os.environ.get("PORT", 5000))
+AUTO_PLAYLIST_URL = os.environ.get("AUTO_PLAYLIST_URL", None)
 
 app = Flask(__name__)
 
-playlist_lock = threading.Lock()
 playlist = []
+playlist_lock = threading.Lock()
 current_index = 0
 
+# ----------------------------
+# HTML ADMIN PAGE
+# ----------------------------
 ADMIN_HTML = """
 <!doctype html>
 <title>YouTube Radio Admin</title>
 <h1>YouTube Radio — Admin</h1>
+
 {% if not auto_url %}
 <form method="post" action="/admin/set_auto">
   <input name="url" placeholder="YouTube playlist URL" style="width:60%">
-  <button type="submit">Set as auto-playlist (cycles automatically)</button>
+  <button type="submit">Set as auto-playlist</button>
 </form>
 {% else %}
-<p>Auto-playlist URL: {{auto_url}}</p>
+<p><b>Auto-playlist:</b> {{auto_url}}</p>
 <form method="post" action="/admin/clear_auto">
   <button type="submit">Clear auto playlist</button>
 </form>
 {% endif %}
+
 <form method="post" action="/admin/add" style="margin-top:20px">
   <input name="url" placeholder="YouTube video or playlist URL" style="width:60%">
-  <button type="submit">Add to playlist manually</button>
+  <button type="submit">Add manually</button>
 </form>
+
 <form method="post" action="/admin/clear" style="margin-top:10px">
   <button type="submit">Clear playlist</button>
 </form>
+
 <h2>Playlist</h2>
 <ol>
 {% for i,u in playlist %}
   <li>{{u}}</li>
 {% endfor %}
 </ol>
+
 <p>Stream endpoint: <a href="/stream">/stream</a></p>
 """
 
+# ----------------------------
+# Utilities
+# ----------------------------
 def extract_playlist_items(playlist_url):
-    """Use yt-dlp to list all video URLs from a playlist."""
-    cmd = [YTDLP_BIN, '--cookies', COOKIES_PATH, '--flat-playlist',
-           '--print', 'url', playlist_url]
+    """Return list of video URLs in playlist."""
+    cmd = [
+        YTDLP_BIN, "--cookies", COOKIES_PATH,
+        "--flat-playlist", "--print", "url", playlist_url
+    ]
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, universal_newlines=True, timeout=60)
-        lines = out.strip().splitlines()
-        # lines will be like “https://www.youtube.com/watch?v=VIDEOID”
-        return [line.strip() for line in lines if line.strip()]
+        out = subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL,
+            universal_newlines=True, timeout=60
+        )
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        return ["https://www.youtube.com/watch?v=" + l if not l.startswith("http") else l for l in lines]
     except Exception as e:
-        print("Error extracting playlist items:", e)
+        print("extract_playlist_items error:", e)
         return []
 
+
+def yt_audio_url(url):
+    """Extract best audio URL from YouTube video."""
+    cmd = [
+        YTDLP_BIN, "--cookies", COOKIES_PATH,
+        "-f", "bestaudio[ext=m4a]/bestaudio",
+        "-g", url
+    ]
+    try:
+        out = subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL,
+            universal_newlines=True, timeout=30
+        )
+        return out.strip()
+    except Exception as e:
+        print("yt_audio_url error:", e)
+        return None
+
+
+def make_ffmpeg_proc(audio_url):
+    """Launch ffmpeg subprocess for streaming audio."""
+    try:
+        cmd = [
+            FFMPEG_BIN, "-loglevel", "quiet", "-i", audio_url,
+            "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
+            "-f", "mp3", "-"
+        ]
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    except Exception as e:
+        print("ffmpeg launch error:", e)
+        return None
+
+
 def ensure_auto_playlist_loaded():
+    """Reload playlist from AUTO_PLAYLIST_URL if set."""
     global playlist
     if AUTO_PLAYLIST_URL:
         with playlist_lock:
-            if not playlist or playlist[0] != AUTO_PLAYLIST_URL:  # simple check
-                items = extract_playlist_items(AUTO_PLAYLIST_URL)
-                if items:
-                    playlist = items.copy()
+            items = extract_playlist_items(AUTO_PLAYLIST_URL)
+            if items:
+                playlist = items.copy()
+                print(f"Loaded {len(items)} items from auto playlist.")
 
-@app.before_first_request
+
 def init_auto_playlist():
+    """Initialize auto playlist on startup."""
     if AUTO_PLAYLIST_URL:
         ensure_auto_playlist_loaded()
 
-@app.route('/')
-def index():
-    return redirect(url_for('admin'))
+# compatible with Flask 3.x
+if hasattr(app, "before_serving"):
+    app.before_serving(init_auto_playlist)
+else:
+    app.before_first_request(init_auto_playlist)
 
-@app.route('/admin')
+# ----------------------------
+# Routes
+# ----------------------------
+@app.route("/")
+def index():
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin")
 def admin():
     with playlist_lock:
         items = list(enumerate(playlist))
     return render_template_string(ADMIN_HTML, playlist=items, auto_url=AUTO_PLAYLIST_URL)
 
-@app.route('/admin/set_auto', methods=['POST'])
-def admin_set_auto():
-    url = request.form.get('url')
-    if not url:
-        return redirect(url_for('admin'))
-    os.environ['AUTO_PLAYLIST_URL'] = url.strip()
-    # Reload auto playlist now
-    global AUTO_PLAYLIST_URL
-    AUTO_PLAYLIST_URL = url.strip()
-    ensure_auto_playlist_loaded()
-    return redirect(url_for('admin'))
 
-@app.route('/admin/clear_auto', methods=['POST'])
+@app.route("/admin/set_auto", methods=["POST"])
+def admin_set_auto():
+    global AUTO_PLAYLIST_URL
+    url = request.form.get("url", "").strip()
+    if not url:
+        return redirect(url_for("admin"))
+    AUTO_PLAYLIST_URL = url
+    ensure_auto_playlist_loaded()
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/clear_auto", methods=["POST"])
 def admin_clear_auto():
     global AUTO_PLAYLIST_URL
     AUTO_PLAYLIST_URL = None
     with playlist_lock:
         playlist.clear()
-    return redirect(url_for('admin'))
+    return redirect(url_for("admin"))
 
-@app.route('/admin/add', methods=['POST'])
+
+@app.route("/admin/add", methods=["POST"])
 def admin_add():
-    url = request.form.get('url')
+    url = request.form.get("url", "").strip()
     if not url:
-        return redirect(url_for('admin'))
+        return redirect(url_for("admin"))
     with playlist_lock:
-        playlist.append(url.strip())
-    return redirect(url_for('admin'))
+        playlist.append(url)
+    return redirect(url_for("admin"))
 
-@app.route('/admin/clear', methods=['POST'])
+
+@app.route("/admin/clear", methods=["POST"])
 def admin_clear():
     with playlist_lock:
         playlist.clear()
-    return redirect(url_for('admin'))
+    return redirect(url_for("admin"))
 
-@app.route('/stream')
+
+@app.route("/stream")
 def stream():
     global current_index
-    def generator():
+
+    def generate():
         while True:
             if AUTO_PLAYLIST_URL:
                 ensure_auto_playlist_loaded()
@@ -137,21 +203,22 @@ def stream():
 
             audio_url = yt_audio_url(url)
             if not audio_url:
-                audio_url = url
+                time.sleep(1)
+                continue
 
-            proc = None
+            proc = make_ffmpeg_proc(audio_url)
+            if not proc or not proc.stdout:
+                time.sleep(1)
+                continue
+
             try:
-                proc = make_ffmpeg_proc(audio_url)
-                if not proc or not proc.stdout:
-                    time.sleep(1)
-                    continue
                 while True:
                     chunk = proc.stdout.read(16 * 1024)
                     if not chunk:
                         break
                     yield chunk
             except Exception as e:
-                print('stream error', e)
+                print("Streaming error:", e)
             finally:
                 if proc:
                     try:
@@ -160,13 +227,17 @@ def stream():
                         pass
 
     headers = {
-        'Content-Type': 'audio/mpeg',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
     }
-    return Response(generator(), headers=headers)
+    return Response(generate(), headers=headers)
 
-if __name__ == '__main__':
+
+# ----------------------------
+# Main entry
+# ----------------------------
+if __name__ == "__main__":
     if not os.path.exists(COOKIES_PATH):
-        print(f'Warning: cookies file not found at {COOKIES_PATH}. Some videos may fail.\\n')
-    app.run(host='0.0.0.0', port=PORT, threaded=True)
+        print(f"Warning: cookies file missing at {COOKIES_PATH}")
+    app.run(host="0.0.0.0", port=PORT, threaded=True)
