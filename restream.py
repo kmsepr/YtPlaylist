@@ -18,10 +18,8 @@ CACHE_FILE = "/mnt/data/playlist_cache.json"
 
 # Multiple playlists with unique names
 PLAYLISTS = {
-    "islamic": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    "malayalam": "https://youtube.com/playlist?list=PLxxxxMalayalamList",
-    "english": "https://youtube.com/playlist?list=PLyyyyEnglishList"
-}
+    "malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
+    }
 
 # Holds stream states per playlist
 STREAMS = {}  # { name: {VIDEOS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
