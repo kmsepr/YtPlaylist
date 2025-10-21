@@ -8,7 +8,7 @@ from flask import Flask, Response, request, render_template_string, redirect, ur
 COOKIES_PATH = os.environ.get('COOKIES_PATH', '/app/data/mnt/cookies.txt')
 YTDLP_BIN = os.environ.get('YTDLP_BIN', 'yt-dlp')
 FFMPEG_BIN = os.environ.get('FFMPEG_BIN', 'ffmpeg')
-PORT = int(os.environ.get('PORT', 8080))
+PORT = int(os.environ.get('PORT', 5000))
 AUTO_PLAYLIST_URL = os.environ.get('AUTO_PLAYLIST_URL', None)  # new
 
 app = Flask(__name__)
