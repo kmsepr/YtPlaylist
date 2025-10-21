@@ -12,7 +12,7 @@ from flask import Flask, Response, render_template_string
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
-PLAYLIST_URL = "https://youtube.com/playlist?list=PLn3BMOY0H7UtVBWbP963mAYdmbRD8YbCi"
+PLAYLIST_URL = "https://youtube.com/playlist?list=PLopzY4eFJ8dUvcGcOXs7aPIWoI1r-dump"
 COOKIES_PATH = "/mnt/data/cookies.txt"
 VIDEOS = []
 CURRENT_INDEX = 0
