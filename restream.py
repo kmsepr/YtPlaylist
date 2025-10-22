@@ -4,6 +4,7 @@ import json
 import threading
 import logging
 import subprocess
+import random
 from collections import deque
 from flask import Flask, Response, render_template_string, abort, stream_with_context
 from logging.handlers import RotatingFileHandler
@@ -27,12 +28,17 @@ COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
 MAX_QUEUE_SIZE = 100  # chunks
 
+# -----------------------------
+# PLAYLISTS
+# -----------------------------
 PLAYLISTS = {
     "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
     "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-
-"Firsts": "https://youtu.be/SuF1x3GrIEI?si=vKW1LFXmdX6IFf0A",
+    "Firsts": "https://youtu.be/SuF1x3GrIEI?si=vKW1LFXmdX6IFf0A",
 }
+
+# Playlists that should be shuffled
+SHUFFLE_PLAYLISTS = {"Malayalam", "Firsts"}  # Only these playlists will shuffle
 
 STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
@@ -54,7 +60,10 @@ a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
 <body>
 <h2>🎧 YouTube Mp3</h2>
 {% for name in playlists %}
-<a href="/listen/{{name}}">▶️ {{name|capitalize}} Radio</a>
+<a href="/listen/{{name}}">
+    ▶️ {{name|capitalize}} Radio
+    {% if name in shuffle_playlists %} 🔀 {% endif %}
+</a>
 {% endfor %}
 </body>
 </html>
@@ -118,6 +127,10 @@ def load_playlist_ids(name, force=False):
             e["id"] for e in data.get("entries", [])
             if not e.get("private") and e.get("age_limit", 0) == 0
         ]
+
+        if name in SHUFFLE_PLAYLISTS:
+            random.shuffle(video_ids)  # Shuffle if playlist is set for shuffle
+
         CACHE[name] = {"ids": video_ids, "time": now}
         save_cache(CACHE)
         logging.info(f"[{name}] Loaded {len(video_ids)} video IDs successfully")
@@ -129,12 +142,11 @@ def load_playlist_ids(name, force=False):
 # -----------------------------
 # STREAM WORKER
 # -----------------------------
-# -----------------------------
-# STREAM WORKER (with yt-dlp -g)
-# -----------------------------
 def stream_worker(name):
     stream = STREAMS[name]
     failed_videos = set()
+    played_videos = set()
+    shuffle_enabled = name in SHUFFLE_PLAYLISTS
 
     while True:
         try:
@@ -142,8 +154,9 @@ def stream_worker(name):
             if not stream["VIDEO_IDS"]:
                 logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
-                stream["INDEX"] = 0
                 failed_videos.clear()
+                played_videos.clear()
+                stream["INDEX"] = 0
                 if not stream["VIDEO_IDS"]:
                     logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
                     time.sleep(10)
@@ -153,20 +166,31 @@ def stream_worker(name):
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 logging.info(f"[{name}] Auto-refreshing playlist IDs...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
-                stream["INDEX"] = 0
                 failed_videos.clear()
+                played_videos.clear()
+                stream["INDEX"] = 0
                 stream["LAST_REFRESH"] = time.time()
+                if shuffle_enabled:
+                    random.shuffle(stream["VIDEO_IDS"])
 
             # Pick next video
-            for _ in range(len(stream["VIDEO_IDS"])):
-                vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
-                stream["INDEX"] += 1
-                if vid not in failed_videos:
-                    break
+            if shuffle_enabled:
+                available_videos = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
+                if not available_videos:
+                    played_videos.clear()
+                    available_videos = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
+                vid = random.choice(available_videos)
+                played_videos.add(vid)
             else:
-                logging.warning(f"[{name}] All videos failed, retrying in 10s...")
-                time.sleep(10)
-                continue
+                for _ in range(len(stream["VIDEO_IDS"])):
+                    vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
+                    stream["INDEX"] += 1
+                    if vid not in failed_videos:
+                        break
+                else:
+                    logging.warning(f"[{name}] All videos failed, retrying in 10s...")
+                    time.sleep(10)
+                    continue
 
             url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ Streaming: {url}")
@@ -191,7 +215,7 @@ def stream_worker(name):
                     check=True
                 )
                 audio_url = result.stdout.strip()
-            except subprocess.CalledProcessError as e:
+            except subprocess.CalledProcessError:
                 logging.warning(f"[{name}] yt-dlp -g failed, skipping video: {url}")
                 failed_videos.add(vid)
                 continue
@@ -240,7 +264,7 @@ def stream_audio(name):
 
 @app.route("/")
 def home():
-    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
+    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys(), shuffle_playlists=SHUFFLE_PLAYLISTS)
 
 @app.route("/listen/<name>")
 def listen(name):
