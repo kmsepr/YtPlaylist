@@ -44,8 +44,7 @@ def load_playlists():
     return {
         "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
         "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-        
-    }, {"Malayalam","Hindi"}
+    }, {"Malayalam", "Hindi"}
 
 def save_playlists():
     try:
@@ -68,8 +67,18 @@ HOME_HTML = """
 <title>YouTube Radio</title>
 <style>
 body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
-a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
-    margin:10px; border-radius:10px; text-decoration:none; }
+a { color:#0f0; text-decoration:none; }
+.playlist-link {
+    display:inline-block; padding:10px; border:1px solid #0f0;
+    margin:10px; border-radius:10px; width:60%;
+}
+.delete-btn {
+    color:#f00; font-weight:bold; margin-left:10px; text-decoration:none;
+    border:1px solid #f00; padding:6px 10px; border-radius:6px;
+}
+.delete-btn:hover {
+    background:#f00; color:#000;
+}
 input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
 input { width:70%; }
 button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
@@ -77,11 +86,14 @@ button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
 </head>
 <body>
 <h2>🎧 YouTube Mp3</h2>
+
 {% for name in playlists %}
-<a href="/listen/{{name}}">
-    ▶️ {{name|capitalize}} Radio
-    {% if name in shuffle_playlists %} 🔀 {% endif %}
-</a>
+<div style="margin:10px;">
+  <a class="playlist-link" href="/listen/{{name}}">
+    ▶️ {{name|capitalize}} Radio {% if name in shuffle_playlists %} 🔀 {% endif %}
+  </a>
+  <a class="delete-btn" href="/delete/{{name}}" title="Delete Playlist" onclick="return confirm('Delete {{name}}?')">🗑️</a>
+</div>
 {% endfor %}
 
 <h3>Add New Playlist</h3>
@@ -315,6 +327,26 @@ def add_playlist():
     }
     threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
     logging.info(f"[{name}] Playlist added and stream started")
+
+    return redirect(url_for("home"))
+
+@app.route("/delete/<name>")
+def delete_playlist(name):
+    if name not in PLAYLISTS:
+        abort(404)
+
+    # Stop and remove stream
+    if name in STREAMS:
+        del STREAMS[name]
+
+    # Remove from playlists, shuffle, cache
+    PLAYLISTS.pop(name, None)
+    SHUFFLE_PLAYLISTS.discard(name)
+    CACHE.pop(name, None)
+
+    save_cache(CACHE)
+    save_playlists()
+    logging.info(f"[{name}] Playlist deleted")
 
     return redirect(url_for("home"))
 
