@@ -99,7 +99,7 @@ button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
 <h3>Add New Playlist</h3>
 <form method="POST" action="/add_playlist">
     <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="url" name="url" placeholder="YouTube URL" required>
+    <input type="url" name="url" placeholder="Playlist URL" required>
     <label><input type="checkbox" name="shuffle"> Shuffle</label>
     <button type="submit">➕ Add Playlist</button>
 </form>
