@@ -300,29 +300,20 @@ def listen(name):
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in PLAYLISTS:
+    if name not in STREAMS:
         abort(404)
-
+    stream = STREAMS[name]
     def generate():
-        video_ids = load_playlist_ids(name)
-        if not video_ids:
-            return
-        vid = random.choice(video_ids)
-        url = f"https://www.youtube.com/watch?v={vid}"
-        result = subprocess.run(
-            ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "--cookies", COOKIES_PATH, "-g", url],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
-        audio_url = result.stdout.strip()
-        cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
-        with subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE) as proc:
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                yield chunk
-
-    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+        while True:
+            if stream["QUEUE"]:
+                yield stream["QUEUE"].popleft()
+            else:
+                time.sleep(0.1)
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Content-Disposition": f'attachment; filename="{name}.mp3"'
+    }
+    return Response(stream_with_context(generate()), headers=headers)
 
 @app.route("/add_playlist", methods=["POST"])
 def add_playlist():
