@@ -97,29 +97,8 @@ def generate_stream(video_id):
         ytdl_proc.kill()
         ffmpeg_proc.kill()
 
-@app.route("/stream/<name>")
-def stream_playlist(name):
-    if name not in PLAYLIST_CACHE or not PLAYLIST_CACHE[name]:
-        if name in PLAYLISTS:
-            refresh_playlist(name, PLAYLISTS[name]["url"])
-        else:
-            abort(404, "Playlist not found")
-
-    ids = PLAYLIST_CACHE.get(name, deque())
-    if not ids:
-        abort(404, "No videos found in playlist")
-
-    video_id = ids[0]
-    ids.rotate(-1)
-
-    logging.info(f"[{name}] ▶️ Streaming: https://www.youtube.com/watch?v={video_id}")
-    return Response(
-        stream_with_context(generate_stream(video_id)),
-        mimetype="audio/mpeg"
-    )
-
 # -----------------------------
-# ROUTES
+# HTML Templates
 # -----------------------------
 HOME_HTML = """
 <!DOCTYPE html>
@@ -139,8 +118,7 @@ HOME_HTML = """
         button:hover { background: #218838; }
         .delete { background: #c0392b; }
         .delete:hover { background: #e74c3c; }
-        audio { width: 90%; margin-top: 10px; }
-        small { color: #aaa; }
+        small { color: #aaa; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -150,7 +128,7 @@ HOME_HTML = """
     <form method="POST" action="/add_playlist">
         <input type="text" name="name" placeholder="Playlist Name (e.g. Malayalam Radio)" required>
         <input type="url" name="url" placeholder="Paste YouTube Playlist URL" required>
-        <small>Example: https://www.youtube.com/playlist?list=PLn3BMOY0H7UtVBWbP963mAYdmbRD8YbCi</small><br>
+        <small>Example: https://www.youtube.com/playlist?list=PLxxxx</small><br>
         <label><input type="checkbox" name="shuffle"> Shuffle</label><br>
         <button type="submit">➕ Add Playlist</button>
     </form>
@@ -159,20 +137,52 @@ HOME_HTML = """
     {% for name, data in playlists.items() %}
         <div class="playlist">
             <strong>{{ name }}</strong><br>
-            <a href="{{ url_for('stream_playlist', name=name) }}" target="_blank">
+            <a href="{{ url_for('show_stream_page', name=name) }}">
                 <button>▶️ Play</button>
             </a>
             <a href="{{ url_for('delete_playlist', name=name) }}">
                 <button class="delete">🗑️ Delete</button>
-            </a>
-            <br>
-            <small><a href="{{ data.url }}" target="_blank" style="color:#aaa;">{{ data.url }}</a></small>
+            </a><br>
+            <small><a href="{{ url_for('stream_playlist', name=name, _external=True) }}" target="_blank">{{ url_for('stream_playlist', name=name, _external=True) }}</a></small>
         </div>
     {% endfor %}
 </body>
 </html>
 """
 
+STREAM_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ name }} - Streaming</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #111; color: #eee; margin: 0; }
+        h1 { background: #222; padding: 10px; }
+        a { color: #4db8ff; text-decoration: none; }
+        .box { margin-top: 20px; background: #222; padding: 15px; border-radius: 10px; width: 90%; max-width: 400px; margin-left: auto; margin-right: auto; }
+        audio { width: 100%; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>🎧 {{ name }} Radio</h1>
+    <div class="box">
+        <p><strong>Now Streaming:</strong></p>
+        <p><a href="{{ yt_url }}" target="_blank">{{ yt_url }}</a></p>
+        <audio controls autoplay>
+            <source src="{{ stream_url }}" type="audio/mpeg">
+            Your browser does not support audio.
+        </audio>
+        <p><small>Direct Stream: <a href="{{ stream_url }}" target="_blank">{{ stream_url }}</a></small></p>
+        <a href="/">⬅️ Back</a>
+    </div>
+</body>
+</html>
+"""
+
+# -----------------------------
+# ROUTES
+# -----------------------------
 @app.route("/")
 def home():
     return render_template_string(HOME_HTML, playlists=PLAYLISTS)
@@ -198,6 +208,44 @@ def delete_playlist(name):
         save_playlists(PLAYLISTS)
         PLAYLIST_CACHE.pop(name, None)
     return redirect(url_for("home"))
+
+@app.route("/radio/<name>")
+def show_stream_page(name):
+    if name not in PLAYLIST_CACHE or not PLAYLIST_CACHE[name]:
+        if name in PLAYLISTS:
+            refresh_playlist(name, PLAYLISTS[name]["url"])
+        else:
+            abort(404, "Playlist not found")
+
+    ids = PLAYLIST_CACHE.get(name, deque())
+    if not ids:
+        abort(404, "No videos found in playlist")
+
+    video_id = ids[0]
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    stream_url = url_for("stream_playlist", name=name, _external=True)
+    return render_template_string(STREAM_HTML, name=name, yt_url=yt_url, stream_url=stream_url)
+
+@app.route("/stream/<name>")
+def stream_playlist(name):
+    if name not in PLAYLIST_CACHE or not PLAYLIST_CACHE[name]:
+        if name in PLAYLISTS:
+            refresh_playlist(name, PLAYLISTS[name]["url"])
+        else:
+            abort(404, "Playlist not found")
+
+    ids = PLAYLIST_CACHE.get(name, deque())
+    if not ids:
+        abort(404, "No videos found in playlist")
+
+    video_id = ids[0]
+    ids.rotate(-1)
+
+    logging.info(f"[{name}] ▶️ Streaming: https://www.youtube.com/watch?v={video_id}")
+    return Response(
+        stream_with_context(generate_stream(video_id)),
+        mimetype="audio/mpeg"
+    )
 
 # -----------------------------
 # MAIN
