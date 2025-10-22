@@ -101,11 +101,22 @@ PLAYER_HTML = """
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{name|capitalize}} Radio</title>
+<style>
+body { background:#000; color:#0f0; text-align:center; font-family:sans-serif; }
+a { color:#0f0; text-decoration:none; }
+audio { width:90%; margin:20px auto; display:block; }
+</style>
 </head>
-<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
+<body>
 <h3>🎶 {{name|capitalize}} Radio</h3>
-<a href="/stream/{{name}}" style="color:#0f0;font-size:18px;">⬇️ Download MP3</a>
-<p>YouTube Playlist</p>
+
+<audio controls autoplay>
+  <source src="/stream/{{name}}" type="audio/mpeg">
+  Your browser does not support audio playback.
+</audio>
+
+<a href="/stream/{{name}}" download style="color:#0f0; font-size:18px;">⬇️ Download MP3</a>
+<p style="margin-top:15px;">🎵 YouTube Playlist</p>
 </body>
 </html>
 """
