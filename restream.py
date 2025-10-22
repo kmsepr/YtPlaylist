@@ -303,10 +303,18 @@ def stream_audio(name):
 
 @app.route("/add_playlist", methods=["POST"])
 def add_playlist():
-    name = request.form.get("name").strip()
-    url = request.form.get("url").strip()
+    name = request.form.get("name", "").strip()
+    url = request.form.get("url", "").strip()
     if not name or not url:
         abort(400, "Name and URL required")
+
+    # --- Clean playlist URL ---
+    import re
+    match = re.search(r"(?:list=)([A-Za-z0-9_-]+)", url)
+    if match:
+        url = f"https://www.youtube.com/playlist?list={match.group(1)}"
+    else:
+        abort(400, "Invalid YouTube playlist URL")
 
     PLAYLISTS[name] = url
     if request.form.get("shuffle"):
@@ -329,7 +337,6 @@ def add_playlist():
     logging.info(f"[{name}] Playlist added and stream started")
 
     return redirect(url_for("home"))
-
 @app.route("/delete/<name>")
 def delete_playlist(name):
     if name not in PLAYLISTS:
