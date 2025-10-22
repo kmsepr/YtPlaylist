@@ -26,24 +26,39 @@ app = Flask(__name__)
 
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
+PLAYLISTS_FILE = "/mnt/data/playlists.json"  # stores all user playlists
 MAX_QUEUE_SIZE = 100  # chunks
 
 # -----------------------------
-# PLAYLISTS
+# LOAD & SAVE PLAYLIST DATA
 # -----------------------------
-PLAYLISTS = {
-    "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
-    "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-    "Firsts": "https://youtu.be/SuF1x3GrIEI?si=vKW1LFXmdX6IFf0A",
-}
+def load_playlists():
+    if os.path.exists(PLAYLISTS_FILE):
+        try:
+            with open(PLAYLISTS_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("playlists", {}), set(data.get("shuffle", []))
+        except Exception as e:
+            logging.error(f"Failed to load playlists: {e}")
+    # Default playlists
+    return {
+        "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
+        "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+        "Firsts": "https://youtu.be/SuF1x3GrIEI?si=vKW1LFXmdX6IFf0A",
+    }, {"Malayalam", "Firsts"}
 
-# Playlists that should be shuffled
-SHUFFLE_PLAYLISTS = {"Malayalam", "Firsts"}  # Only these playlists will shuffle
+def save_playlists():
+    try:
+        with open(PLAYLISTS_FILE, "w") as f:
+            json.dump({"playlists": PLAYLISTS, "shuffle": list(SHUFFLE_PLAYLISTS)}, f)
+    except Exception as e:
+        logging.error(f"Failed to save playlists: {e}")
 
+PLAYLISTS, SHUFFLE_PLAYLISTS = load_playlists()
 STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
 # -----------------------------
-# HTML TEMPLATES
+# HTML
 # -----------------------------
 HOME_HTML = """
 <!DOCTYPE html>
@@ -96,7 +111,7 @@ PLAYER_HTML = """
 """
 
 # -----------------------------
-# CACHE FUNCTIONS
+# CACHE
 # -----------------------------
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -140,7 +155,7 @@ def load_playlist_ids(name, force=False):
         ]
 
         if name in SHUFFLE_PLAYLISTS:
-            random.shuffle(video_ids)  # Shuffle if playlist is set for shuffle
+            random.shuffle(video_ids)
 
         CACHE[name] = {"ids": video_ids, "time": now}
         save_cache(CACHE)
@@ -161,19 +176,16 @@ def stream_worker(name):
 
     while True:
         try:
-            # Reload playlist if empty
             if not stream["VIDEO_IDS"]:
-                logging.info(f"[{name}] Playlist empty, loading...")
+                logging.info(f"[{name}] Playlist empty, reloading...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
                 failed_videos.clear()
                 played_videos.clear()
                 stream["INDEX"] = 0
                 if not stream["VIDEO_IDS"]:
-                    logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
                     time.sleep(10)
                     continue
 
-            # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 logging.info(f"[{name}] Auto-refreshing playlist IDs...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
@@ -184,13 +196,12 @@ def stream_worker(name):
                 if shuffle_enabled:
                     random.shuffle(stream["VIDEO_IDS"])
 
-            # Pick next video
             if shuffle_enabled:
-                available_videos = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
-                if not available_videos:
+                available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
+                if not available:
                     played_videos.clear()
-                    available_videos = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
-                vid = random.choice(available_videos)
+                    available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
+                vid = random.choice(available)
                 played_videos.add(vid)
             else:
                 for _ in range(len(stream["VIDEO_IDS"])):
@@ -199,7 +210,6 @@ def stream_worker(name):
                     if vid not in failed_videos:
                         break
                 else:
-                    logging.warning(f"[{name}] All videos failed, retrying in 10s...")
                     time.sleep(10)
                     continue
 
@@ -207,31 +217,19 @@ def stream_worker(name):
             logging.info(f"[{name}] ▶️ Streaming: {url}")
 
             if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH) == 0:
-                logging.warning(f"[{name}] Cookies missing or empty, skipping video")
                 failed_videos.add(vid)
                 continue
 
-            # Get direct audio URL via yt-dlp -g
             try:
                 result = subprocess.run(
-                    [
-                        "yt-dlp",
-                        "-f", "bestaudio[ext=m4a]/bestaudio",
-                        "--cookies", COOKIES_PATH,
-                        "-g", url
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=True
+                    ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "--cookies", COOKIES_PATH, "-g", url],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
                 )
                 audio_url = result.stdout.strip()
             except subprocess.CalledProcessError:
-                logging.warning(f"[{name}] yt-dlp -g failed, skipping video: {url}")
                 failed_videos.add(vid)
                 continue
 
-            # Stream audio via ffmpeg
             cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -251,28 +249,8 @@ def stream_worker(name):
             time.sleep(5)
 
 # -----------------------------
-# FLASK ROUTES
+# ROUTES
 # -----------------------------
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS:
-        abort(404)
-    stream = STREAMS[name]
-
-    def generate():
-        while True:
-            if stream["QUEUE"]:
-                yield stream["QUEUE"].popleft()
-            else:
-                time.sleep(0.1)
-
-    headers = {
-        "Content-Type": "audio/mpeg",
-        "Content-Disposition": f'attachment; filename="{name}.mp3"'
-    }
-
-    return Response(stream_with_context(generate()), headers=headers)
-
 @app.route("/")
 def home():
     return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys(), shuffle_playlists=SHUFFLE_PLAYLISTS)
@@ -283,6 +261,23 @@ def listen(name):
         abort(404)
     return render_template_string(PLAYER_HTML, name=name)
 
+@app.route("/stream/<name>")
+def stream_audio(name):
+    if name not in STREAMS:
+        abort(404)
+    stream = STREAMS[name]
+    def generate():
+        while True:
+            if stream["QUEUE"]:
+                yield stream["QUEUE"].popleft()
+            else:
+                time.sleep(0.1)
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Content-Disposition": f'attachment; filename="{name}.mp3"'
+    }
+    return Response(stream_with_context(generate()), headers=headers)
+
 @app.route("/add_playlist", methods=["POST"])
 def add_playlist():
     name = request.form.get("name").strip()
@@ -290,20 +285,16 @@ def add_playlist():
     if not name or not url:
         abort(400, "Name and URL required")
 
-    # Add to PLAYLISTS
     PLAYLISTS[name] = url
-
-    # Shuffle option
     if request.form.get("shuffle"):
         SHUFFLE_PLAYLISTS.add(name)
+    save_playlists()  # persist changes
 
-    # Load playlist IDs
     video_ids = load_playlist_ids(name)
     if not video_ids:
         logging.warning(f"[{name}] Failed to load playlist, not starting stream")
         return redirect(url_for("home"))
 
-    # Initialize stream
     STREAMS[name] = {
         "VIDEO_IDS": video_ids,
         "INDEX": 0,
