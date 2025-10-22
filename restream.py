@@ -127,7 +127,10 @@ audio { width:90%; margin:20px auto; display:block; }
   Your browser does not support audio playback.
 </audio>
 
-<a href="/stream/{{name}}" download style="color:#0f0; font-size:18px;">⬇️ Download MP3</a>
+<p style="margin-top:20px; font-size:18px;">
+  🔗 Stream URL:<br>
+  <a href="/stream/{{name}}" style="color:#0f0;">{{ request.host_url }}stream/{{name }}</a>
+</p>
 <p style="margin-top:15px;">🎵 YouTube Playlist</p>
 </body>
 </html>
