@@ -82,6 +82,7 @@ a { color:#0f0; text-decoration:none; }
 input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
 input { width:70%; }
 button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
+small { color:#aaa; font-size:13px; }
 </style>
 </head>
 <body>
@@ -98,8 +99,12 @@ button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
 
 <h3>Add New Playlist</h3>
 <form method="POST" action="/add_playlist">
-    <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="url" name="url" placeholder="YouTube URL" required>
+    <input type="text" name="name" placeholder="Playlist Name (e.g. Malayalam)" required>
+    <input type="url" name="url"
+        placeholder="https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn"
+        required>
+    <br>
+    <small>💡 Hint: Use full playlist link (without <code>&si=...</code> part)</small><br>
     <label><input type="checkbox" name="shuffle"> Shuffle</label>
     <button type="submit">➕ Add Playlist</button>
 </form>
@@ -310,6 +315,10 @@ def add_playlist():
     url = request.form.get("url").strip()
     if not name or not url:
         abort(400, "Name and URL required")
+
+    # Clean playlist URL (remove &si or extra params)
+    if "&" in url:
+        url = url.split("&")[0]
 
     PLAYLISTS[name] = url
     if request.form.get("shuffle"):
