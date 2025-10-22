@@ -82,6 +82,11 @@ a { color:#0f0; text-decoration:none; }
 input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
 input { width:70%; }
 button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
+.tip {
+    color:#888;
+    font-size:14px;
+    margin-top:30px;
+}
 </style>
 </head>
 <body>
@@ -103,6 +108,11 @@ button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
     <label><input type="checkbox" name="shuffle"> Shuffle</label>
     <button type="submit">➕ Add Playlist</button>
 </form>
+
+<p class="tip">
+💡 Tip: If you want latest video plays first, unselect shuffle — works in most playlists.
+</p>
+
 </body>
 </html>
 """
