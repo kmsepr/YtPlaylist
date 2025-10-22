@@ -98,15 +98,15 @@ small { color:#aaa; font-size:13px; }
 {% endfor %}
 
 <h3>Add New Playlist</h3>
-<form method="POST" action="/add_playlist">
-    <input type="text" name="name" placeholder="Playlist Name (e.g. Malayalam)" required>
-    <input type="url" name="url"
-        placeholder="https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn"
-        required>
-    <br>
-    <small>💡 Hint: Use full playlist link (without <code>&si=...</code> part)</small><br>
-    <label><input type="checkbox" name="shuffle"> Shuffle</label>
-    <button type="submit">➕ Add Playlist</button>
+<form action="/add_playlist" method="post" style="margin:20px;">
+  <input name="name" placeholder="Enter playlist name (e.g. Malayalam)" 
+         style="padding:8px; width:90%; margin-bottom:10px;">
+  <br>
+  <input name="url" 
+         placeholder="https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn"
+         style="padding:8px; width:90%; margin-bottom:10px;">
+  <br>
+  <button type="submit" style="padding:8px 16px;">Add Playlist</button>
 </form>
 </body>
 </html>
