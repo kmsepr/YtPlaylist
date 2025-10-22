@@ -118,11 +118,6 @@ button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
     <button type="submit">➕ Add Playlist</button>
 </form>
 
-<p class="tip">
-💡 Tip: Enable <b>Reverse Order</b> to play latest uploads first.<br>
-💡 Unselect shuffle to play in playlist order.
-</p>
-
 </body>
 </html>
 """
