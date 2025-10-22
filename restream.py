@@ -64,7 +64,6 @@ HOME_HTML = """
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="10"> <!-- 🔁 Auto-refresh every 10s -->
 <title>YouTube Radio</title>
 <style>
 body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
