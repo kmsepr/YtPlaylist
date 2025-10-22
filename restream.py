@@ -6,7 +6,7 @@ import logging
 import subprocess
 import random
 from collections import deque
-from flask import Flask, Response, render_template_string, abort, stream_with_context
+from flask import Flask, Response, render_template_string, abort, stream_with_context, request, redirect, url_for
 from logging.handlers import RotatingFileHandler
 
 # -----------------------------
@@ -55,6 +55,9 @@ HOME_HTML = """
 body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
 a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
     margin:10px; border-radius:10px; text-decoration:none; }
+input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
+input { width:70%; }
+button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -65,6 +68,14 @@ a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
     {% if name in shuffle_playlists %} 🔀 {% endif %}
 </a>
 {% endfor %}
+
+<h3>Add New Playlist</h3>
+<form method="POST" action="/add_playlist">
+    <input type="text" name="name" placeholder="Playlist Name" required>
+    <input type="url" name="url" placeholder="YouTube URL" required>
+    <label><input type="checkbox" name="shuffle"> Shuffle</label>
+    <button type="submit">➕ Add Playlist</button>
+</form>
 </body>
 </html>
 """
@@ -271,6 +282,39 @@ def listen(name):
     if name not in PLAYLISTS:
         abort(404)
     return render_template_string(PLAYER_HTML, name=name)
+
+@app.route("/add_playlist", methods=["POST"])
+def add_playlist():
+    name = request.form.get("name").strip()
+    url = request.form.get("url").strip()
+    if not name or not url:
+        abort(400, "Name and URL required")
+
+    # Add to PLAYLISTS
+    PLAYLISTS[name] = url
+
+    # Shuffle option
+    if request.form.get("shuffle"):
+        SHUFFLE_PLAYLISTS.add(name)
+
+    # Load playlist IDs
+    video_ids = load_playlist_ids(name)
+    if not video_ids:
+        logging.warning(f"[{name}] Failed to load playlist, not starting stream")
+        return redirect(url_for("home"))
+
+    # Initialize stream
+    STREAMS[name] = {
+        "VIDEO_IDS": video_ids,
+        "INDEX": 0,
+        "QUEUE": deque(),
+        "LOCK": threading.Lock(),
+        "LAST_REFRESH": time.time(),
+    }
+    threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
+    logging.info(f"[{name}] Playlist added and stream started")
+
+    return redirect(url_for("home"))
 
 # -----------------------------
 # MAIN
