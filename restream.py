@@ -64,11 +64,40 @@ PLAYER_HTML = """
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{name|capitalize}} Radio</title>
+<style>
+body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
+button { color:#0f0;background:none;border:1px solid #0f0;
+    padding:8px 14px;border-radius:8px;margin:10px;
+    text-decoration:none;font-size:16px;cursor:pointer; }
+audio { width:90%; margin-top:20px; }
+button:hover { background:#0f0;color:#000; }
+</style>
+<script>
+function copyURL() {
+  const url = window.location.origin + "/stream/{{name}}";
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = document.getElementById("copyBtn");
+    btn.textContent = "✅ Copied!";
+    setTimeout(() => btn.textContent = "📋 Copy Stream URL", 2000);
+  }).catch(err => {
+    alert("❌ Copy failed: " + err);
+  });
+}
+</script>
 </head>
-<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
+<body>
 <h3>🎶 {{name|capitalize}} Radio</h3>
-<a href="/stream/{{name}}" style="color:#0f0;font-size:18px;">⬇️ Download MP3</a>
-<p>YouTube Playlist</p>
+
+<audio controls autoplay>
+  <source src="/stream/{{name}}" type="audio/mpeg">
+  Your browser does not support the audio element.
+</audio>
+
+<div>
+  <button id="copyBtn" onclick="copyURL()">📋 Copy Stream URL</button>
+</div>
+
+<p>Now playing from YouTube playlist 🎵</p>
 </body>
 </html>
 """
