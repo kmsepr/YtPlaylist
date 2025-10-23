@@ -1,7 +1,7 @@
 # Use a lightweight Python base image
 FROM python:3.11-slim
 
-# Install system dependencies including ffmpeg (for audio processing) and curl
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     gcc \
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
  && rm -rf /var/lib/apt/lists/*
 
-# Install the latest yt-dlp binary globally
+# Install the latest yt-dlp binary
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp
 
@@ -24,14 +24,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the app code
 COPY . .
 
-# Ensure persistent storage directory exists (if your app uses it for cookies, cache, etc.)
+# Create a directory for persistent data (cookies/cache if needed)
 RUN mkdir -p /mnt/data
 
-# Expose the port your Flask app runs on
+# Expose the port that Gunicorn will run on
 EXPOSE 8000
 
-# Use environment variable for FLASK_ENV to avoid dev warnings in production
+# Set environment to production
 ENV FLASK_ENV=production
 
-# Start the Flask app
-CMD ["python", "restream.py"]
+# Start the Flask app with Gunicorn
+# -w 4: 4 workers, adjust based on your CPU
+# -b 0.0.0.0:8000: bind to all interfaces
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "restream:app"]
