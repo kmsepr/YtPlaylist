@@ -1,395 +1,297 @@
 import os
 import time
 import json
-import threading
-import logging
 import subprocess
-import random
-from collections import deque
-from flask import Flask, Response, render_template_string, abort, stream_with_context, request, redirect, url_for
-from logging.handlers import RotatingFileHandler
-
-# -----------------------------
-# CONFIG & LOGGING
-# -----------------------------
-LOG_PATH = "/mnt/data/radio.log"
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), handler]
-)
+import logging
+import threading
+from flask import Flask, Response, request
+from pathlib import Path
+from datetime import datetime
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-COOKIES_PATH = "/mnt/data/cookies.txt"
-CACHE_FILE = "/mnt/data/playlist_cache.json"
-PLAYLISTS_FILE = "/mnt/data/playlists.json"
-MAX_QUEUE_SIZE = 100
-MAX_FAILS = 3
+# Interval settings
+REFRESH_INTERVAL = 1200       # 20 minutes
+RECHECK_INTERVAL = 3600       # 60 minutes
+EXPIRE_AGE = 7200             # 2 hours
 
-# -----------------------------
-# LOAD & SAVE PLAYLIST DATA
-# -----------------------------
-def load_playlists():
-    if os.path.exists(PLAYLISTS_FILE):
-        try:
-            with open(PLAYLISTS_FILE, "r") as f:
-                data = json.load(f)
-                return data.get("playlists", {}), set(data.get("shuffle", []))
-        except Exception as e:
-            logging.error(f"Failed to load playlists: {e}")
-    # default example playlists
-    return {
-        "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
-        "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-    }, {"Malayalam", "Hindi"}
+# Fixed user agent
+FIXED_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
-def save_playlists():
+CHANNELS = {
+
+
+ "entridegree": "https://youtube.com/@entridegreelevelexams/videos",
+     "talent": "https://youtube.com/@talentacademyonline/videos",
+
+   "drali": "https://youtube.com/@draligomaa/videos",
+    "yaqeen": "https://youtube.com/@yaqeeninstituteofficial/videos",
+    "ccm": "https://youtube.com/@cambridgecentralmosque/videos",
+    "maheen": "https://youtube.com/@hitchhikingnomaad/videos",
+    "entri": "https://youtube.com/@entriapp/videos",
+    "zamzam": "https://youtube.com/@zamzamacademy/videos",
+    "jrstudio": "https://youtube.com/@jrstudiomalayalam/videos",
+    "raftalks": "https://youtube.com/@raftalksmalayalam/videos",
+    "parvinder": "https://www.youtube.com/@pravindersheoran/videos",
+    "qasimi": "https://www.youtube.com/@quranstudycentremukkam/videos",
+    "sharique": "https://youtube.com/@shariquesamsudheen/videos",
+ 
+   
+    "vijayakumarblathur": "https://youtube.com/@vijayakumarblathur/videos",
+    
+    "suprabhatam": "https://youtube.com/@suprabhaatham2023/videos",
+    "bayyinah": "https://youtube.com/@bayyinah/videos",
+    "vallathorukatha": "https://www.youtube.com/@babu_ramachandran/videos",
+    "furqan": "https://youtube.com/@alfurqan4991/videos",
+    "skicr": "https://youtube.com/@skicrtv/videos",
+    "dhruvrathee": "https://youtube.com/@dhruvrathee/videos",
+    "safari": "https://youtube.com/@safaritvlive/videos",
+    "sunnxt": "https://youtube.com/@sunnxtmalayalam/videos",
+    "movieworld": "https://youtube.com/@movieworldmalayalammovies/videos",
+    "comedy": "https://youtube.com/@malayalamcomedyscene5334/videos",
+    "studyiq": "https://youtube.com/@studyiqiasenglish/videos",
+    "sreekanth": "https://youtube.com/@sreekanthvettiyar/videos",
+    "jr": "https://youtube.com/@yesitsmejr/videos",
+    "habib": "https://youtube.com/@habibomarcom/videos",
+    "unacademy": "https://youtube.com/@unacademyiasenglish/videos",
+    "eftguru": "https://youtube.com/@eftguru-ql8dk/videos",
+    "anurag": "https://youtube.com/@anuragtalks1/videos",
+}
+
+VIDEO_CACHE = {
+    name: {"url": None, "last_checked": 0, "thumbnail": "", "upload_date": "", "title": "", "channel": ""}
+    for name in CHANNELS
+}
+LAST_VIDEO_ID = {name: None for name in CHANNELS}
+TMP_DIR = Path("/tmp/ytmp3")
+TMP_DIR.mkdir(exist_ok=True)
+
+def fetch_latest_video_url(name, channel_url):
     try:
-        with open(PLAYLISTS_FILE, "w") as f:
-            json.dump({"playlists": PLAYLISTS, "shuffle": list(SHUFFLE_PLAYLISTS)}, f)
-    except Exception as e:
-        logging.error(f"Failed to save playlists: {e}")
+        result = subprocess.run([
+            "yt-dlp",
+            "--dump-single-json",
+            "--playlist-end", "1",
+            "--cookies", "/mnt/data/cookies.txt",
+            "--user-agent", FIXED_USER_AGENT,
+            channel_url
+        ], capture_output=True, text=True, check=True)
 
-PLAYLISTS, SHUFFLE_PLAYLISTS = load_playlists()
-STREAMS = {}
-CACHE = {}
-
-# -----------------------------
-# HTML
-# -----------------------------
-HOME_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>YouTube Radio</title>
-<style>
-body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
-a { color:#0f0; text-decoration:none; }
-.playlist-link { display:inline-block; padding:10px; border:1px solid #0f0; margin:10px; border-radius:10px; width:60%; }
-.delete-btn { color:#f00; font-weight:bold; margin-left:10px; text-decoration:none; border:1px solid #f00; padding:6px 10px; border-radius:6px; }
-.delete-btn:hover { background:#f00; color:#000; }
-input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
-input { width:70%; }
-button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
-.tip { color:#888; font-size:14px; margin-top:30px; }
-</style>
-</head>
-<body>
-<h2>🎧 YouTube Mp3 Radio</h2>
-
-{% for name in playlists %}
-<div style="margin:10px;">
-  <a class="playlist-link" href="/listen/{{name}}">
-    ▶️ {{name|capitalize}} {% if name in shuffle_playlists %} 🔀 {% endif %}
-  </a>
-  <a class="delete-btn" href="/delete/{{name}}" onclick="return confirm('Delete {{name}}?')">🗑️</a>
-</div>
-{% endfor %}
-
-<h3>Add New Playlist</h3>
-<form method="POST" action="/add_playlist">
-    <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="url" name="url" placeholder="Playlist URL" required>
-    <label><input type="checkbox" name="shuffle"> Shuffle</label>
-    <button type="submit">➕ Add Playlist</button>
-</form>
-
-<h3>Add Video by ID</h3>
-<form method="POST" action="/add_video">
-    <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="text" name="video_id" placeholder="YouTube Video ID" required>
-    <button type="submit">➕ Add Video to Playlist</button>
-</form>
-
-<p class="tip">💡 Manual videos can be grouped under a playlist by using the same playlist name. Shuffle works if selected.</p>
-</body>
-</html>
-"""
-
-PLAYER_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{name|capitalize}} Radio</title>
-<style>
-body { background:#000; color:#0f0; text-align:center; font-family:sans-serif; }
-audio { width:90%; margin:20px auto; display:block; }
-</style>
-</head>
-<body>
-<h3>🎶 {{name|capitalize}} Radio</h3>
-<audio controls autoplay>
-  <source src="/stream/{{name}}" type="audio/mpeg">
-  Your browser does not support audio playback.
-</audio>
-<p style="margin-top:15px;">🎵 Playlist URL or Video IDs:<br>
-<a href="{{ playlist_url }}" target="_blank">{{ playlist_url }}</a>
-</p>
-</body>
-</html>
-"""
-
-# -----------------------------
-# CACHE
-# -----------------------------
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_cache(data):
-    try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump(data, f)
-    except:
-        pass
-
-CACHE = load_cache()
-
-# -----------------------------
-# LOAD PLAYLIST VIDEO IDS
-# -----------------------------
-def load_playlist_ids(name, force=False):
-    if isinstance(PLAYLISTS[name], list):
-        # Manual playlist
-        return PLAYLISTS[name]
-
-    # YouTube URL playlist
-    now = time.time()
-    cached = CACHE.get(name, {})
-    if not force and cached and now - cached.get("time",0) < 1800:
-        logging.info(f"[{name}] Using cached IDs ({len(cached['ids'])})")
-        return cached["ids"]
-
-    url = PLAYLISTS[name]
-    try:
-        logging.info(f"[{name}] Refreshing playlist IDs...")
-        result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
         data = json.loads(result.stdout)
-        video_ids = [e["id"] for e in data.get("entries", []) if not e.get("private") and e.get("age_limit",0)==0]
-        if name in SHUFFLE_PLAYLISTS:
-            random.shuffle(video_ids)
-        CACHE[name] = {"ids": video_ids, "time": now}
-        save_cache(CACHE)
-        logging.info(f"[{name}] Loaded {len(video_ids)} video IDs")
-        return video_ids
+        video = data["entries"][0]
+        video_id = video["id"]
+        thumbnail_url = video.get("thumbnail", "")
+        upload_date = video.get("upload_date", "")
+        title = video.get("title", "")
+        channel = video.get("channel", "")
+        return f"https://www.youtube.com/watch?v={video_id}", thumbnail_url, video_id, upload_date, title, channel
     except Exception as e:
-        logging.error(f"[{name}] Playlist load failed: {e}")
-        return cached.get("ids", [])
+        logging.error(f"Error fetching video from {channel_url}: {e}")
+        return None, None, None, None, None, None
 
-# -----------------------------
-# STREAM WORKER
-# -----------------------------
-def stream_worker(name):
-    stream = STREAMS[name]
-    failed_videos = set()
-    failed_count = {}
-    played_videos = set()
-    shuffle_enabled = name in SHUFFLE_PLAYLISTS
+def format_upload_month(upload_date):
+    try:
+        dt = datetime.strptime(upload_date, "%Y%m%d")
+        return dt.strftime("%B %Y")  # e.g., "April 2025"
+    except Exception:
+        return "Unknown"
 
+def download_and_convert(channel, video_url):
+    final_path = TMP_DIR / f"{channel}.mp3"
+    if final_path.exists():
+        return final_path
+    if not video_url:
+        return None
+
+    try:
+        base_path = TMP_DIR / channel
+        audio_path = base_path.with_suffix(".webm")
+        thumb_path = base_path.with_suffix(".jpg")
+
+        # Download best audio and thumbnail
+        subprocess.run([
+            "yt-dlp",
+            "-f", "bestaudio",
+            "--output", str(base_path) + ".%(ext)s",
+            "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
+            "--cookies", "/mnt/data/cookies.txt",
+            "--user-agent", FIXED_USER_AGENT,
+            video_url
+        ], check=True)
+
+        if not audio_path.exists() or not thumb_path.exists():
+            logging.error(f"Missing audio or thumbnail for {channel}")
+            return None
+
+        info = VIDEO_CACHE[channel]
+        title = info.get("title", channel)
+        artist = info.get("channel", channel)
+        album = format_upload_month(info.get("upload_date", ""))
+
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-i", str(audio_path),
+            "-i", str(thumb_path),
+            "-map", "0:a",
+            "-map", "1:v",
+            "-c:a", "libmp3lame",
+            "-c:v", "mjpeg",
+            "-b:a", "24k",
+            "-ar", "22050",
+            "-ac", "1",
+            "-id3v2_version", "3",
+            "-metadata", f"title={title}",
+            "-metadata", f"album={album}",
+            "-metadata", f"artist={artist}",
+            "-disposition:v", "attached_pic",
+            str(final_path)
+        ], check=True)
+
+        audio_path.unlink(missing_ok=True)
+        thumb_path.unlink(missing_ok=True)
+
+        return final_path if final_path.exists() else None
+    except Exception as e:
+        logging.error(f"Error converting {channel}: {e}")
+        partial = final_path.with_suffix(".mp3.part")
+        if partial.exists():
+            partial.unlink()
+        return None
+
+def cleanup_old_files():
     while True:
-        try:
-            if not stream["VIDEO_IDS"]:
-                time.sleep(5)
-                continue
+        current_time = time.time()
+        for file in TMP_DIR.glob("*.mp3"):
+            if current_time - file.stat().st_mtime > EXPIRE_AGE:
+                try:
+                    logging.info(f"Cleaning up old file: {file}")
+                    file.unlink()
+                except Exception as e:
+                    logging.error(f"Error cleaning up file {file}: {e}")
+        time.sleep(EXPIRE_AGE)
 
-            if shuffle_enabled:
-                available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
-                if not available:
-                    played_videos.clear()
-                    available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
-                if not available:
-                    time.sleep(5)
-                    continue
-                vid = random.choice(available)
-                played_videos.add(vid)
-            else:
-                for _ in range(len(stream["VIDEO_IDS"])):
-                    vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
-                    stream["INDEX"] += 1
-                    if vid not in failed_videos:
-                        break
-                else:
-                    time.sleep(5)
-                    continue
+def update_video_cache_loop():
+    while True:
+        for name, url in CHANNELS.items():
+            video_url, thumbnail, video_id, upload_date, title, channel_name = fetch_latest_video_url(name, url)
+            if video_url and video_id:
+                if LAST_VIDEO_ID[name] != video_id:
+                    LAST_VIDEO_ID[name] = video_id
+                    VIDEO_CACHE[name].update({
+                        "url": video_url,
+                        "last_checked": time.time(),
+                        "thumbnail": thumbnail,
+                        "upload_date": upload_date,
+                        "title": title,
+                        "channel": channel_name,
+                    })
+                    download_and_convert(name, video_url)
+            time.sleep(3)
+        time.sleep(REFRESH_INTERVAL)
 
-            url = f"https://www.youtube.com/watch?v={vid}"
-            logging.info(f"[{name}] ▶️ Streaming: {url}")
+def auto_download_mp3s():
+    while True:
+        for name, data in VIDEO_CACHE.items():
+            video_url = data.get("url")
+            if video_url:
+                mp3_path = TMP_DIR / f"{name}.mp3"
+                if not mp3_path.exists() or time.time() - mp3_path.stat().st_mtime > RECHECK_INTERVAL:
+                    logging.info(f"Pre-downloading {name}")
+                    download_and_convert(name, video_url)
+            time.sleep(3)
+        time.sleep(RECHECK_INTERVAL)
 
-            if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH)==0:
-                failed_videos.add(vid)
-                continue
+@app.route("/<channel>.mp3")
+def stream_mp3(channel):
+    if channel not in CHANNELS:
+        return "Channel not found", 404
 
-            try:
-                result = subprocess.run(
-                    ["yt-dlp","-f","bestaudio[ext=m4a]/bestaudio","--cookies",COOKIES_PATH,"-g",url],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-                )
-                audio_url = result.stdout.strip()
-                if not audio_url:
-                    raise Exception("Empty audio URL")
-            except:
-                failed_count[vid] = failed_count.get(vid,0)+1
-                if failed_count[vid]>=MAX_FAILS:
-                    failed_videos.add(vid)
-                continue
+    data = VIDEO_CACHE[channel]
+    video_url = data.get("url")
+    if not video_url:
+        video_url, thumbnail, video_id, upload_date, title, channel_name = fetch_latest_video_url(channel, CHANNELS[channel])
+        if not video_url:
+            return "Unable to fetch video", 500
+        if video_id and LAST_VIDEO_ID[channel] != video_id:
+            LAST_VIDEO_ID[channel] = video_id
+            VIDEO_CACHE[channel].update({
+                "url": video_url,
+                "last_checked": time.time(),
+                "thumbnail": thumbnail,
+                "upload_date": upload_date,
+                "title": title,
+                "channel": channel_name,
+            })
 
-            cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    mp3_path = download_and_convert(channel, video_url)
+    if not mp3_path or not mp3_path.exists():
+        return "Error preparing stream", 500
 
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                if len(stream["QUEUE"])<MAX_QUEUE_SIZE:
-                    stream["QUEUE"].append(chunk)
-
-            proc.stdout.close()
-            proc.stderr.close()
-            proc.wait()
-
-        except Exception as e:
-            logging.error(f"[{name}] Worker error: {e}", exc_info=True)
-            time.sleep(5)
-
-# -----------------------------
-# ROUTES
-# -----------------------------
-@app.route("/")
-def home():
-    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys(), shuffle_playlists=SHUFFLE_PLAYLISTS)
-
-@app.route("/listen/<name>")
-def listen(name):
-    if name not in PLAYLISTS:
-        abort(404)
-    playlist_url = PLAYLISTS[name] if isinstance(PLAYLISTS[name], str) else ",".join(PLAYLISTS[name])
-    return render_template_string(PLAYER_HTML, name=name, playlist_url=playlist_url)
-
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS:
-        abort(404)
-    stream = STREAMS[name]
-    def generate():
-        while True:
-            if stream["QUEUE"]:
-                yield stream["QUEUE"].popleft()
-            else:
-                time.sleep(0.1)
+    file_size = os.path.getsize(mp3_path)
+    range_header = request.headers.get('Range', None)
     headers = {
-        "Content-Type": "audio/mpeg",
-        "Content-Disposition": f'attachment; filename="{name}.mp3"'
+        'Content-Type': 'audio/mpeg',
+        'Accept-Ranges': 'bytes',
     }
-    return Response(stream_with_context(generate()), headers=headers)
 
-@app.route("/add_playlist", methods=["POST"])
-def add_playlist():
-    name = request.form.get("name","").strip()
-    url = request.form.get("url","").strip()
-    if not name or not url:
-        abort(400, "Name and URL required")
+    if range_header:
+        try:
+            range_value = range_header.strip().split("=")[1]
+            byte1, byte2 = range_value.split("-")
+            byte1 = int(byte1)
+            byte2 = int(byte2) if byte2 else file_size - 1
+        except Exception as e:
+            return f"Invalid Range header: {e}", 400
 
-    import re
-    match = re.search(r"(?:list=)([A-Za-z0-9_-]+)", url)
-    if match:
-        url = f"https://www.youtube.com/playlist?list={match.group(1)}"
-    else:
-        abort(400, "Invalid YouTube playlist URL")
+        length = byte2 - byte1 + 1
+        with open(mp3_path, 'rb') as f:
+            f.seek(byte1)
+            chunk = f.read(length)
 
-    PLAYLISTS[name] = url
-    if request.form.get("shuffle"):
-        SHUFFLE_PLAYLISTS.add(name)
-    save_playlists()
+        headers.update({
+            'Content-Range': f'bytes {byte1}-{byte2}/{file_size}',
+            'Content-Length': str(length)
+        })
+        return Response(chunk, status=206, headers=headers)
 
-    video_ids = load_playlist_ids(name)
-    if not video_ids:
-        logging.warning(f"[{name}] Failed to load playlist")
-        return redirect(url_for("home"))
+    with open(mp3_path, 'rb') as f:
+        data = f.read()
+    headers['Content-Length'] = str(file_size)
+    return Response(data, headers=headers)
 
-    STREAMS[name] = {
-        "VIDEO_IDS": video_ids,
-        "INDEX":0,
-        "QUEUE": deque(),
-        "LOCK": threading.Lock(),
-        "LAST_REFRESH": time.time(),
-    }
-    threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
-    logging.info(f"[{name}] Playlist stream started")
-    return redirect(url_for("home"))
+@app.route("/")
+def index():
+    html = """
+    <html><head><title>YouTube Mp3</title></head>
+    <body style="font-family:sans-serif; font-size:12px; background:#fff;">
+    <h3>YouTube Mp3</h3>
+    """
+    def get_upload_date(channel):
+        return VIDEO_CACHE[channel].get("upload_date", "Unknown")
 
-@app.route("/add_video", methods=["POST"])
-def add_video():
-    name = request.form.get("name","").strip()
-    vid = request.form.get("video_id","").strip()
-    if not name or not vid:
-        abort(400, "Name and Video ID required")
+    for channel in sorted(CHANNELS, key=lambda x: get_upload_date(x), reverse=True):
+        mp3_path = TMP_DIR / f"{channel}.mp3"
+        if not mp3_path.exists():
+            continue
+        thumbnail = (VIDEO_CACHE[channel].get("thumbnail", "") or "http://via.placeholder.com/120x80?text=YT").replace("https://", "http://")
+        upload_date = get_upload_date(channel)
+        html += f"""
+        <div style="margin-bottom:12px; padding:6px; border:1px solid #ccc; border-radius:6px; width:160px;">
+            <img src="{thumbnail}" loading="lazy" style="width:100%; height:auto; display:block; margin-bottom:4px;" alt="{channel}">
+            <div style="text-align:center;">
+                <a href="/{channel}.mp3" style="color:#000; text-decoration:none;">{channel}</a><br>
+                <small>{upload_date}</small>
+            </div>
+        </div>
+        """
+    html += "</body></html>"
+    return html
 
-    if name in PLAYLISTS and isinstance(PLAYLISTS[name], list):
-        if vid not in PLAYLISTS[name]:
-            PLAYLISTS[name].append(vid)
-    else:
-        PLAYLISTS[name] = [vid]
+threading.Thread(target=update_video_cache_loop, daemon=True).start()
+threading.Thread(target=auto_download_mp3s, daemon=True).start()
+threading.Thread(target=cleanup_old_files, daemon=True).start()
 
-    save_playlists()
-
-    if name not in STREAMS:
-        STREAMS[name] = {
-            "VIDEO_IDS": PLAYLISTS[name][:],
-            "INDEX":0,
-            "QUEUE": deque(),
-            "LOCK": threading.Lock(),
-            "LAST_REFRESH": time.time(),
-        }
-        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
-    else:
-        STREAMS[name]["VIDEO_IDS"] = PLAYLISTS[name][:]
-
-    logging.info(f"[{name}] Added video ID manually: {vid}")
-    return redirect(url_for("home"))
-
-@app.route("/delete/<name>")
-def delete_playlist(name):
-    if name not in PLAYLISTS:
-        abort(404)
-
-    if name in STREAMS:
-        del STREAMS[name]
-    PLAYLISTS.pop(name,None)
-    SHUFFLE_PLAYLISTS.discard(name)
-    CACHE.pop(name,None)
-    save_cache(CACHE)
-    save_playlists()
-    logging.info(f"[{name}] Playlist deleted")
-    return redirect(url_for("home"))
-
-# -----------------------------
-# MAIN
-# -----------------------------
 if __name__ == "__main__":
-    for name in PLAYLISTS:
-        STREAMS[name] = {
-            "VIDEO_IDS": load_playlist_ids(name),
-            "INDEX":0,
-            "QUEUE": deque(),
-            "LOCK": threading.Lock(),
-            "LAST_REFRESH": time.time(),
-        }
-        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
-
-    logging.info("🎧 Multi-Playlist YouTube Radio started!")
-    logging.info(f"Logs: {LOG_PATH}")
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8000)
