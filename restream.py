@@ -42,8 +42,8 @@ def load_playlists():
             logging.error(f"Failed to load playlists.json: {e}")
     # Default playlists
     playlists = {
-        "Malayalam": {"url": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE", "shuffle": False, "reverse": False},
-        "Hindi": {"url": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2", "shuffle": False, "reverse": False},
+        "Malayalam": {"url": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn", "shuffle": False, "reverse": False},
+        "Hindi": {"url": "https://youtube.com/playlist?list=PLH67Zm2MkA5744xytd3SUdLVeZ4zJ6htc", "shuffle": False, "reverse": False},
     }
     save_playlists(playlists)
     return playlists
