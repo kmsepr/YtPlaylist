@@ -213,6 +213,7 @@ def stream_worker(name):
 
     while True:
         try:
+            # Reload if playlist empty
             if not stream["VIDEO_IDS"]:
                 logging.info(f"[{name}] Playlist empty, reloading...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
@@ -220,9 +221,11 @@ def stream_worker(name):
                 played_videos.clear()
                 stream["INDEX"] = 0
                 if not stream["VIDEO_IDS"]:
+                    logging.warning(f"[{name}] No videos available after reload, retrying in 10s...")
                     time.sleep(10)
                     continue
 
+            # Auto-refresh every 30min
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 logging.info(f"[{name}] Auto-refreshing playlist IDs...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
@@ -238,6 +241,12 @@ def stream_worker(name):
                 if not available:
                     played_videos.clear()
                     available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
+
+                if not available:
+                    logging.warning(f"[{name}] No available videos to play, retrying in 5s...")
+                    time.sleep(5)
+                    continue
+
                 vid = random.choice(available)
                 played_videos.add(vid)
             else:
@@ -247,16 +256,19 @@ def stream_worker(name):
                     if vid not in failed_videos:
                         break
                 else:
-                    time.sleep(10)
+                    logging.warning(f"[{name}] No available videos to play, retrying in 5s...")
+                    time.sleep(5)
                     continue
 
             url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ Streaming: {url}")
 
+            # Skip if cookies missing
             if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH) == 0:
                 failed_videos.add(vid)
                 continue
 
+            # Get direct audio URL
             try:
                 result = subprocess.run(
                     ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "--cookies", COOKIES_PATH, "-g", url],
@@ -267,6 +279,7 @@ def stream_worker(name):
                 failed_videos.add(vid)
                 continue
 
+            # Stream via FFmpeg
             cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
