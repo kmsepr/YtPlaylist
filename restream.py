@@ -4,9 +4,8 @@ import json
 import threading
 import logging
 import subprocess
-import random
 from collections import deque
-from flask import Flask, Response, render_template_string, abort, stream_with_context, request, redirect, url_for
+from flask import Flask, Response, render_template_string, abort, stream_with_context
 from logging.handlers import RotatingFileHandler
 
 # -----------------------------
@@ -26,38 +25,17 @@ app = Flask(__name__)
 
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
-PLAYLISTS_FILE = "/mnt/data/playlists.json"  # stores all user playlists
 MAX_QUEUE_SIZE = 100  # chunks
 
-# -----------------------------
-# LOAD & SAVE PLAYLIST DATA
-# -----------------------------
-def load_playlists():
-    if os.path.exists(PLAYLISTS_FILE):
-        try:
-            with open(PLAYLISTS_FILE, "r") as f:
-                data = json.load(f)
-                return data.get("playlists", {}), set(data.get("shuffle", []))
-        except Exception as e:
-            logging.error(f"Failed to load playlists: {e}")
-    # Default playlists
-    return {
-        "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
-        "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-    }, {"Malayalam", "Hindi"}
+PLAYLISTS = {
+    "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
+    "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+}
 
-def save_playlists():
-    try:
-        with open(PLAYLISTS_FILE, "w") as f:
-            json.dump({"playlists": PLAYLISTS, "shuffle": list(SHUFFLE_PLAYLISTS)}, f)
-    except Exception as e:
-        logging.error(f"Failed to save playlists: {e}")
-
-PLAYLISTS, SHUFFLE_PLAYLISTS = load_playlists()
 STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
 
 # -----------------------------
-# HTML
+# HTML TEMPLATES
 # -----------------------------
 HOME_HTML = """
 <!DOCTYPE html>
@@ -67,52 +45,15 @@ HOME_HTML = """
 <title>YouTube Radio</title>
 <style>
 body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
-a { color:#0f0; text-decoration:none; }
-.playlist-link {
-    display:inline-block; padding:10px; border:1px solid #0f0;
-    margin:10px; border-radius:10px; width:60%;
-}
-.delete-btn {
-    color:#f00; font-weight:bold; margin-left:10px; text-decoration:none;
-    border:1px solid #f00; padding:6px 10px; border-radius:6px;
-}
-.delete-btn:hover {
-    background:#f00; color:#000;
-}
-input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
-input { width:70%; }
-button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
-.tip {
-    color:#888;
-    font-size:14px;
-    margin-top:30px;
-}
+a { color:#0f0; display:block; padding:10px; border:1px solid #0f0;
+    margin:10px; border-radius:10px; text-decoration:none; }
 </style>
 </head>
 <body>
 <h2>🎧 YouTube Mp3</h2>
-
 {% for name in playlists %}
-<div style="margin:10px;">
-  <a class="playlist-link" href="/listen/{{name}}">
-    ▶️ {{name|capitalize}} Radio {% if name in shuffle_playlists %} 🔀 {% endif %}
-  </a>
-  <a class="delete-btn" href="/delete/{{name}}" title="Delete Playlist" onclick="return confirm('Delete {{name}}?')">🗑️</a>
-</div>
+<a href="/listen/{{name}}">▶️ {{name|capitalize}} Radio</a>
 {% endfor %}
-
-<h3>Add New Playlist</h3>
-<form method="POST" action="/add_playlist">
-    <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="url" name="url" placeholder="Playlist URL" required>
-    <label><input type="checkbox" name="shuffle"> Shuffle</label>
-    <button type="submit">➕ Add Playlist</button>
-</form>
-
-<p class="tip">
-💡 Tip: If you want latest video plays first, unselect shuffle — works in most playlists.
-</p>
-
 </body>
 </html>
 """
@@ -123,32 +64,17 @@ PLAYER_HTML = """
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{name|capitalize}} Radio</title>
-<style>
-body { background:#000; color:#0f0; text-align:center; font-family:sans-serif; }
-a { color:#0f0; text-decoration:none; }
-audio { width:90%; margin:20px auto; display:block; }
-</style>
 </head>
-<body>
+<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif;">
 <h3>🎶 {{name|capitalize}} Radio</h3>
-
-<audio controls autoplay>
-  <source src="/stream/{{name}}" type="audio/mpeg">
-  Your browser does not support audio playback.
-</audio>
-
-<p style="margin-top:20px; font-size:18px;">
-  🔗 Stream URL:<br>
-  <a href="/stream/{{name}}" style="color:#0f0;">{{ request.host_url }}stream/{{name }}</a>
-</p>
-
-<p style="margin-top:15px;">🎵 YouTube Playlist</p>
+<a href="/stream/{{name}}" style="color:#0f0;font-size:18px;">⬇️ Download MP3</a>
+<p>YouTube Playlist</p>
 </body>
 </html>
 """
 
 # -----------------------------
-# CACHE
+# CACHE FUNCTIONS
 # -----------------------------
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -190,10 +116,6 @@ def load_playlist_ids(name, force=False):
             e["id"] for e in data.get("entries", [])
             if not e.get("private") and e.get("age_limit", 0) == 0
         ]
-
-        if name in SHUFFLE_PLAYLISTS:
-            random.shuffle(video_ids)
-
         CACHE[name] = {"ids": video_ids, "time": now}
         save_cache(CACHE)
         logging.info(f"[{name}] Loaded {len(video_ids)} video IDs successfully")
@@ -208,66 +130,54 @@ def load_playlist_ids(name, force=False):
 def stream_worker(name):
     stream = STREAMS[name]
     failed_videos = set()
-    played_videos = set()
-    shuffle_enabled = name in SHUFFLE_PLAYLISTS
 
     while True:
         try:
             if not stream["VIDEO_IDS"]:
-                logging.info(f"[{name}] Playlist empty, reloading...")
+                logging.info(f"[{name}] Playlist empty, loading...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
-                failed_videos.clear()
-                played_videos.clear()
                 stream["INDEX"] = 0
+                failed_videos.clear()
                 if not stream["VIDEO_IDS"]:
+                    logging.warning(f"[{name}] Playlist still empty after refresh, retrying in 10s...")
                     time.sleep(10)
                     continue
 
+            # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 logging.info(f"[{name}] Auto-refreshing playlist IDs...")
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
-                failed_videos.clear()
-                played_videos.clear()
                 stream["INDEX"] = 0
+                failed_videos.clear()
                 stream["LAST_REFRESH"] = time.time()
-                if shuffle_enabled:
-                    random.shuffle(stream["VIDEO_IDS"])
 
-            if shuffle_enabled:
-                available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
-                if not available:
-                    played_videos.clear()
-                    available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
-                vid = random.choice(available)
-                played_videos.add(vid)
+            # Pick next video
+            for _ in range(len(stream["VIDEO_IDS"])):
+                vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
+                stream["INDEX"] += 1
+                if vid not in failed_videos:
+                    break
             else:
-                for _ in range(len(stream["VIDEO_IDS"])):
-                    vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
-                    stream["INDEX"] += 1
-                    if vid not in failed_videos:
-                        break
-                else:
-                    time.sleep(10)
-                    continue
+                logging.warning(f"[{name}] All videos failed, retrying in 10s...")
+                time.sleep(10)
+                continue
 
             url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ Streaming: {url}")
 
             if not os.path.exists(COOKIES_PATH) or os.path.getsize(COOKIES_PATH) == 0:
+                logging.warning(f"[{name}] Cookies missing or empty, skipping video")
                 failed_videos.add(vid)
                 continue
 
-            try:
-                result = subprocess.run(
-                    ["yt-dlp", "-f", "bestaudio[ext=m4a]/bestaudio", "--cookies", COOKIES_PATH, "-g", url],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-                )
-                audio_url = result.stdout.strip()
-            except subprocess.CalledProcessError:
-                failed_videos.add(vid)
-                continue
+            cmd = (
+                f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
+                f'--cookies "{COOKIES_PATH}" '
+                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
+                f'-o - --quiet --no-warnings | '
+                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
+            )
 
-            cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
             while True:
@@ -276,6 +186,11 @@ def stream_worker(name):
                     break
                 if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
                     stream["QUEUE"].append(chunk)
+
+            err = proc.stderr.read().decode().strip()
+            if err and "403" in err:
+                logging.warning(f"[{name}] 403 Forbidden detected, skipping video: {url}")
+                failed_videos.add(vid)
 
             proc.stdout.close()
             proc.stderr.close()
@@ -286,90 +201,37 @@ def stream_worker(name):
             time.sleep(5)
 
 # -----------------------------
-# ROUTES
+# FLASK ROUTES
 # -----------------------------
-@app.route("/")
-def home():
-    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys(), shuffle_playlists=SHUFFLE_PLAYLISTS)
-
-@app.route("/listen/<name>")
-def listen(name):
-    if name not in PLAYLISTS:
-        abort(404)
-    return render_template_string(PLAYER_HTML, name=name)
-
 @app.route("/stream/<name>")
 def stream_audio(name):
     if name not in STREAMS:
         abort(404)
     stream = STREAMS[name]
+
     def generate():
         while True:
             if stream["QUEUE"]:
                 yield stream["QUEUE"].popleft()
             else:
                 time.sleep(0.1)
+
     headers = {
         "Content-Type": "audio/mpeg",
         "Content-Disposition": f'attachment; filename="{name}.mp3"'
     }
+
     return Response(stream_with_context(generate()), headers=headers)
 
-@app.route("/add_playlist", methods=["POST"])
-def add_playlist():
-    name = request.form.get("name", "").strip()
-    url = request.form.get("url", "").strip()
-    if not name or not url:
-        abort(400, "Name and URL required")
+@app.route("/")
+def home():
+    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
 
-    # --- Clean playlist URL ---
-    import re
-    match = re.search(r"(?:list=)([A-Za-z0-9_-]+)", url)
-    if match:
-        url = f"https://www.youtube.com/playlist?list={match.group(1)}"
-    else:
-        abort(400, "Invalid YouTube playlist URL")
-
-    PLAYLISTS[name] = url
-    if request.form.get("shuffle"):
-        SHUFFLE_PLAYLISTS.add(name)
-    save_playlists()  # persist changes
-
-    video_ids = load_playlist_ids(name)
-    if not video_ids:
-        logging.warning(f"[{name}] Failed to load playlist, not starting stream")
-        return redirect(url_for("home"))
-
-    STREAMS[name] = {
-        "VIDEO_IDS": video_ids,
-        "INDEX": 0,
-        "QUEUE": deque(),
-        "LOCK": threading.Lock(),
-        "LAST_REFRESH": time.time(),
-    }
-    threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
-    logging.info(f"[{name}] Playlist added and stream started")
-
-    return redirect(url_for("home"))
-@app.route("/delete/<name>")
-def delete_playlist(name):
+@app.route("/listen/<name>")
+def listen(name):
     if name not in PLAYLISTS:
         abort(404)
-
-    # Stop and remove stream
-    if name in STREAMS:
-        del STREAMS[name]
-
-    # Remove from playlists, shuffle, cache
-    PLAYLISTS.pop(name, None)
-    SHUFFLE_PLAYLISTS.discard(name)
-    CACHE.pop(name, None)
-
-    save_cache(CACHE)
-    save_playlists()
-    logging.info(f"[{name}] Playlist deleted")
-
-    return redirect(url_for("home"))
+    return render_template_string(PLAYER_HTML, name=name)
 
 # -----------------------------
 # MAIN
