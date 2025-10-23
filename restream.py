@@ -29,8 +29,8 @@ CACHE_FILE = "/mnt/data/playlist_cache.json"
 MAX_QUEUE_SIZE = 100  # chunks
 
 PLAYLISTS = {
-    "Malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    "Hindi": "https://youtube.com/playlist?list=PLjETElbIubzvAfBq_fkSy2ZSZXsReXlWo",
+    "Malayalam": "https://youtube.com/playlist?list=PLs0evDzPiKwAyJDAbmMOg44iuNLPaI4nn",
+    "Hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
 STREAMS = {}  # { name: {VIDEO_IDS, INDEX, QUEUE, LOCK, LAST_REFRESH} }
