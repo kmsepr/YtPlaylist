@@ -8,6 +8,7 @@ import random
 from collections import deque
 from flask import Flask, Response, render_template_string, abort, stream_with_context, request, redirect, url_for
 from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse, parse_qs
 
 # -----------------------------
 # CONFIG & LOGGING
@@ -15,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 LOG_PATH = "/mnt/data/radio.log"
 PLAYLISTS_FILE = "/mnt/data/playlists.json"
 COOKIES_PATH = "/mnt/data/cookies.txt"
-CACHE_FILE = "/mnt/data/playlist_cache.json"
+CACHE_FILE = "/mnt/data/playlist_cache.json"  # stores both per-name cache and backups by playlist id
 MAX_QUEUE_SIZE = 100
 
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -127,8 +128,19 @@ function copyURL() {
 """
 
 # -----------------------------
-# CACHE HANDLING
+# CACHE HANDLING (with backups)
 # -----------------------------
+# CACHE structure:
+# {
+#   "by_name": {
+#       "<playlist_name>": {"ids": [...], "time": 1234567890}
+#   },
+#   "backups": {
+#       "<playlist_id_PL...>": {"title": "Playlist Title", "videos": [...], "last_updated": 1234567890}
+#   }
+# }
+DEFAULT_CACHE = {"by_name": {}, "backups": {}}
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
@@ -136,64 +148,105 @@ def load_cache():
                 return json.load(f)
         except Exception as e:
             logging.error(f"Failed to load cache: {e}")
-    return {}
+    return DEFAULT_CACHE.copy()
 
 def save_cache(data):
     try:
         with open(CACHE_FILE, "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, indent=2)
     except Exception as e:
         logging.error(f"Failed to save cache: {e}")
 
 CACHE = load_cache()
 
+# helper: extract playlist id (PL...)
+def extract_playlist_id(url):
+    try:
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query)
+        return q.get("list", [None])[0]
+    except Exception:
+        return None
+
 # -----------------------------
-# PLAYLIST LOADING
+# PLAYLIST LOADING (with backup)
 # -----------------------------
 def load_playlist_ids(name, force=False):
     info = PLAYLISTS[name]
     now = time.time()
-    cached = CACHE.get(name, {})
-    if not force and cached and now - cached.get("time", 0) < 1800:
-        logging.info(f"[{name}] Using cached playlist IDs ({len(cached['ids'])})")
-        return cached["ids"]
+    cached_entry = CACHE.get("by_name", {}).get(name, {})
+    if not force and cached_entry and now - cached_entry.get("time", 0) < 1800:
+        logging.info(f"[{name}] Using cached playlist IDs ({len(cached_entry.get('ids', []))})")
+        return cached_entry.get("ids", [])
 
     url = info["url"].split("&")[0]  # remove &si etc.
+    playlist_id = extract_playlist_id(url)
     cmd = ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH]
 
     try:
-        logging.info(f"[{name}] Refreshing playlist IDs...")
+        logging.info(f"[{name}] Refreshing playlist IDs from YouTube...")
         result = subprocess.run(cmd, text=True, capture_output=True)
         if result.returncode != 0:
+            # log full stderr for debugging
             logging.error(f"[{name}] yt-dlp failed (exit {result.returncode}):\n{result.stderr.strip()}")
             raise subprocess.CalledProcessError(result.returncode, cmd)
 
         data = json.loads(result.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if not e.get("private")]
+        ids = [e["id"] for e in data.get("entries", []) if e.get("id") and not e.get("private")]
 
+        # apply reverse/shuffle preferences
         if info.get("reverse"):
             ids.reverse()
         if info.get("shuffle"):
             random.shuffle(ids)
 
+        # Save per-name cache (used by loader)
         if ids:
-            CACHE[name] = {"ids": ids, "time": now}
+            CACHE.setdefault("by_name", {})[name] = {"ids": ids, "time": now}
             save_cache(CACHE)
-            logging.info(f"[{name}] ✅ Loaded {len(ids)} video IDs.")
+            logging.info(f"[{name}] ✅ Loaded {len(ids)} video IDs from YouTube.")
+
+            # Update backups keyed by playlist id (stable)
+            if playlist_id:
+                title = data.get("title") or name
+                CACHE.setdefault("backups", {})[playlist_id] = {
+                    "title": title,
+                    "videos": ids.copy(),  # store the current ordered list
+                    "last_updated": now
+                }
+                save_cache(CACHE)
+                logging.info(f"[{name}] Backup updated for playlist id {playlist_id} ({len(ids)} videos).")
         else:
-            logging.warning(f"[{name}] Playlist empty or invalid.")
+            logging.warning(f"[{name}] Playlist loaded but no videos found.")
 
         return ids
 
     except Exception as e:
         logging.error(f"[{name}] Playlist load failed: {e}")
-        # Use previous cache if possible
-        if cached.get("ids"):
-            logging.warning(f"[{name}] Using previous cached {len(cached['ids'])} IDs (backup mode).")
-            return cached["ids"]
-        else:
-            logging.warning(f"[{name}] No cached IDs available.")
-            return []
+
+        # 1) Try per-name cache fallback
+        if cached_entry.get("ids"):
+            logging.warning(f"[{name}] Using previous cached {len(cached_entry['ids'])} IDs (by-name cache).")
+            return cached_entry["ids"]
+
+        # 2) Try backup by playlist id (if we have it)
+        if playlist_id:
+            backup = CACHE.get("backups", {}).get(playlist_id, {})
+            if backup.get("videos"):
+                logging.warning(f"[{name}] Using backup for playlist id {playlist_id} with {len(backup['videos'])} videos.")
+                # respect reverse/shuffle preferences again
+                vids = backup["videos"].copy()
+                if info.get("reverse"):
+                    vids.reverse()
+                if info.get("shuffle"):
+                    random.shuffle(vids)
+                # also save back to by_name cache so subsequent loads use it
+                CACHE.setdefault("by_name", {})[name] = {"ids": vids, "time": now}
+                save_cache(CACHE)
+                return vids
+
+        logging.warning(f"[{name}] No cached IDs available. Returning empty list.")
+        return []
 
 # -----------------------------
 # STREAM WORKER
