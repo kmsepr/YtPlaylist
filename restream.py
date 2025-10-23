@@ -176,39 +176,67 @@ CACHE = load_cache()
 # -----------------------------
 # LOAD PLAYLIST VIDEO IDS
 # -----------------------------
+def save_playlists():
+    try:
+        if not PLAYLISTS:
+            logging.warning("⚠️ Skipped saving playlists — empty PLAYLISTS dict.")
+            return
+        with open(PLAYLISTS_FILE, "w") as f:
+            json.dump(
+                {
+                    "playlists": PLAYLISTS,
+                    "shuffle": list(SHUFFLE_PLAYLISTS),
+                    "reverse": list(REVERSE_PLAYLISTS),
+                },
+                f,
+                indent=2
+            )
+    except Exception as e:
+        logging.error(f"Failed to save playlists: {e}")
+
 def load_playlist_ids(name, force=False):
     now = time.time()
     cached = CACHE.get(name, {})
     if not force and cached and now - cached.get("time", 0) < 1800:
-        return cached["ids"]
+        return cached.get("ids", [])
 
-    url = PLAYLISTS[name]
+    url = PLAYLISTS.get(name)
+    if not url:
+        logging.error(f"[{name}] Playlist URL missing.")
+        return cached.get("ids", [])
+
     try:
         result = subprocess.run(
             ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
         data = json.loads(result.stdout)
+        entries = data.get("entries", [])
         video_ids = [
-            e["id"] for e in data.get("entries", [])
-            if not e.get("private") and e.get("age_limit", 0) == 0
+            e["id"] for e in entries
+            if e.get("id") and not e.get("private") and e.get("age_limit", 0) == 0
         ]
+
+        if not video_ids:
+            logging.warning(f"[{name}] Playlist fetched but has no playable videos.")
 
         if name in REVERSE_PLAYLISTS:
             video_ids.reverse()
         if name in SHUFFLE_PLAYLISTS:
             random.shuffle(video_ids)
 
-        CACHE[name] = {"ids": video_ids, "time": now}
-        save_cache(CACHE)
-        return video_ids
+        if video_ids:
+            CACHE[name] = {"ids": video_ids, "time": now}
+            save_cache(CACHE)
+        else:
+            logging.warning(f"[{name}] Keeping old cached playlist since fetched list was empty.")
+
+        return video_ids or cached.get("ids", [])
     except Exception as e:
         logging.error(f"[{name}] Playlist load failed: {e}")
         return cached.get("ids", [])
 
-# -----------------------------
-# STREAM WORKER
-# -----------------------------
+
 def stream_worker(name):
     stream = STREAMS[name]
     failed_videos = set()
@@ -217,39 +245,57 @@ def stream_worker(name):
 
     while True:
         try:
+            # Reload playlist if empty
             if not stream["VIDEO_IDS"]:
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
                 failed_videos.clear()
                 played_videos.clear()
                 stream["INDEX"] = 0
                 if not stream["VIDEO_IDS"]:
-                    time.sleep(10)
+                    logging.warning(f"[{name}] No videos found, retrying in 20s...")
+                    time.sleep(20)
                     continue
 
+            # Periodic refresh every 30 minutes
             if time.time() - stream["LAST_REFRESH"] > 1800:
-                stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
+                new_ids = load_playlist_ids(name, force=True)
+                if new_ids:
+                    stream["VIDEO_IDS"] = new_ids
+                    logging.info(f"[{name}] Playlist refreshed successfully.")
+                else:
+                    logging.warning(f"[{name}] Playlist refresh returned no videos, keeping old list.")
                 failed_videos.clear()
                 played_videos.clear()
                 stream["INDEX"] = 0
                 stream["LAST_REFRESH"] = time.time()
-                if shuffle_enabled:
-                    random.shuffle(stream["VIDEO_IDS"])
 
+            # --- Pick next video ---
             if shuffle_enabled:
                 available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos and v not in played_videos]
                 if not available:
                     played_videos.clear()
                     available = [v for v in stream["VIDEO_IDS"] if v not in failed_videos]
+
+                if not available:
+                    logging.warning(f"[{name}] No available videos to choose from. Retrying after 15s...")
+                    time.sleep(15)
+                    continue
+
                 vid = random.choice(available)
                 played_videos.add(vid)
             else:
+                if not stream["VIDEO_IDS"]:
+                    time.sleep(10)
+                    continue
+
                 for _ in range(len(stream["VIDEO_IDS"])):
                     vid = stream["VIDEO_IDS"][stream["INDEX"] % len(stream["VIDEO_IDS"])]
                     stream["INDEX"] += 1
                     if vid not in failed_videos:
                         break
                 else:
-                    time.sleep(10)
+                    logging.warning(f"[{name}] All videos failed, retrying after 20s...")
+                    time.sleep(20)
                     continue
 
             url = f"https://www.youtube.com/watch?v={vid}"
@@ -260,8 +306,11 @@ def stream_worker(name):
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
                 )
                 audio_url = result.stdout.strip()
+                if not audio_url:
+                    raise subprocess.CalledProcessError(1, "yt-dlp", "Empty URL")
             except subprocess.CalledProcessError:
                 failed_videos.add(vid)
+                logging.error(f"[{name}] Failed to extract audio URL for {vid}")
                 continue
 
             cmd = f'ffmpeg -re -i "{audio_url}" -b:a 40k -ac 1 -f mp3 pipe:1 -loglevel quiet'
@@ -280,8 +329,7 @@ def stream_worker(name):
 
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}", exc_info=True)
-            time.sleep(5)
-
+            time.sleep(10)
 # -----------------------------
 # ROUTES
 # -----------------------------
