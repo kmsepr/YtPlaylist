@@ -36,4 +36,4 @@ ENV FLASK_ENV=production
 # Start the Flask app with Gunicorn
 # -w 4: 4 workers, adjust based on your CPU
 # -b 0.0.0.0:8000: bind to all interfaces
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "restream:app"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "restream:app"]
