@@ -142,10 +142,25 @@ audio { width:90%; margin:20px auto; display:block; }
   <a href="/stream/{{name}}" style="color:#0f0;">{{ request.host_url }}stream/{{name }}</a>
 </p>
 
-<p style="margin-top:15px;">🎵 YouTube Playlist</p>
+<p style="margin-top:15px;">🎵 YouTube Playlist:<br>
+  <a href="{{ playlist_url }}" target="_blank">{{ playlist_name }}</a>
+</p>
 </body>
 </html>
 """
+
+@app.route("/listen/<name>")
+def listen(name):
+    if name not in PLAYLISTS:
+        abort(404)
+    playlist_url = PLAYLISTS.get(name)
+    playlist_name = f"{name.capitalize()} Playlist"
+    return render_template_string(
+        PLAYER_HTML,
+        name=name,
+        playlist_url=playlist_url,
+        playlist_name=playlist_name
+    )
 
 # -----------------------------
 # CACHE
