@@ -88,80 +88,8 @@ STREAMS = {}
 # -----------------------------
 # HTML
 # -----------------------------
-HOME_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>YouTube Radio</title>
-<style>
-body { background:#000;color:#0f0;text-align:center;font-family:sans-serif; }
-a { color:#0f0; text-decoration:none; }
-.playlist-link {
-    display:inline-block; padding:10px; border:1px solid #0f0;
-    margin:10px; border-radius:10px; width:60%;
-}
-.delete-btn {
-    color:#f00; font-weight:bold; margin-left:10px; text-decoration:none;
-    border:1px solid #f00; padding:6px 10px; border-radius:6px;
-}
-.delete-btn:hover { background:#f00; color:#000; }
-input, button { padding:8px; margin:5px; border-radius:5px; border:none; }
-input { width:70%; }
-button { background:#0f0;color:#000; font-weight:bold; cursor:pointer; }
-.tip { color:#888; font-size:14px; margin-top:30px; }
-</style>
-</head>
-<body>
-<h2>🎧 YouTube Mp3 Radio</h2>
-
-{% for name in playlists %}
-<div style="margin:10px;">
-  <a class="playlist-link" href="/listen/{{name}}">
-    ▶️ {{name|capitalize}} Radio
-    {% if name in shuffle_playlists %} 🔀 {% endif %}
-    {% if name in reverse_playlists %} 🔁 {% endif %}
-  </a>
-  <a class="delete-btn" href="/delete/{{name}}" title="Delete Playlist" onclick="return confirm('Delete {{name}}?')">🗑️</a>
-</div>
-{% endfor %}
-
-<h3>Add New Playlist</h3>
-<form method="POST" action="/add_playlist">
-    <input type="text" name="name" placeholder="Playlist Name" required>
-    <input type="url" name="url" placeholder="YouTube Playlist URL" required><br>
-    <label><input type="checkbox" name="shuffle"> Shuffle</label>
-    <label><input type="checkbox" name="reverse"> Reverse</label><br>
-    <button type="submit">➕ Add Playlist</button>
-</form>
-
-</body>
-</html>
-"""
-
-PLAYER_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{name|capitalize}} Radio</title>
-<style>
-body { background:#000; color:#0f0; text-align:center; font-family:sans-serif; }
-a { color:#0f0; text-decoration:none; }
-audio { width:90%; margin:20px auto; display:block; }
-</style>
-</head>
-<body>
-<h3>🎶 {{name|capitalize}} Radio</h3>
-<audio controls autoplay>
-  <source src="/stream/{{name}}" type="audio/mpeg">
-</audio>
-<p>🔗 Stream URL:<br>
-  <a href="/stream/{{name}}" style="color:#0f0;">{{ request.host_url }}stream/{{name }}</a>
-</p>
-</body>
-</html>
-"""
+HOME_HTML = """..."""  # Keep as is
+PLAYER_HTML = """..."""  # Keep as is
 
 # -----------------------------
 # CACHE
@@ -349,11 +277,13 @@ def delete_playlist(name):
     return redirect(url_for("home"))
 
 # -----------------------------
-# MAIN
+# START STREAM WORKERS
 # -----------------------------
-if __name__ == "__main__":
+def start_workers():
     for name in PLAYLISTS:
         STREAMS[name] = {"VIDEO_IDS": load_playlist_ids(name), "INDEX": 0, "QUEUE": deque(), "LOCK": threading.Lock(), "LAST_REFRESH": time.time()}
         threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
     logging.info("🎧 Multi-Playlist YouTube Radio started!")
-    app.run(host="0.0.0.0", port=5000)
+
+# Call this on import so Gunicorn workers start streaming
+start_workers()
