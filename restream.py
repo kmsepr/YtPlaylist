@@ -158,28 +158,42 @@ def load_playlist_ids(name, force=False):
         logging.info(f"[{name}] Using cached playlist IDs ({len(cached['ids'])})")
         return cached["ids"]
 
-    url = info["url"]
-    url = url.split("&")[0]  # remove &si etc.
+    url = info["url"].split("&")[0]  # remove &si etc.
+    cmd = ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH]
+
     try:
         logging.info(f"[{name}] Refreshing playlist IDs...")
-        result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
+        result = subprocess.run(cmd, text=True, capture_output=True)
+        if result.returncode != 0:
+            logging.error(f"[{name}] yt-dlp failed (exit {result.returncode}):\n{result.stderr.strip()}")
+            raise subprocess.CalledProcessError(result.returncode, cmd)
+
         data = json.loads(result.stdout)
         ids = [e["id"] for e in data.get("entries", []) if not e.get("private")]
-        if info.get("reverse"): ids.reverse()
-        if info.get("shuffle"): random.shuffle(ids)
-        CACHE[name] = {"ids": ids, "time": now}
-        save_cache(CACHE)
-        logging.info(f"[{name}] Loaded {len(ids)} videos.")
+
+        if info.get("reverse"):
+            ids.reverse()
+        if info.get("shuffle"):
+            random.shuffle(ids)
+
+        if ids:
+            CACHE[name] = {"ids": ids, "time": now}
+            save_cache(CACHE)
+            logging.info(f"[{name}] ✅ Loaded {len(ids)} video IDs.")
+        else:
+            logging.warning(f"[{name}] Playlist empty or invalid.")
+
         return ids
+
     except Exception as e:
         logging.error(f"[{name}] Playlist load failed: {e}")
+        # Use previous cache if possible
         if cached.get("ids"):
-            logging.warning(f"[{name}] Using previous cached {len(cached['ids'])} IDs.")
+            logging.warning(f"[{name}] Using previous cached {len(cached['ids'])} IDs (backup mode).")
             return cached["ids"]
-        return []
+        else:
+            logging.warning(f"[{name}] No cached IDs available.")
+            return []
 
 # -----------------------------
 # STREAM WORKER
@@ -201,6 +215,7 @@ def stream_worker(name):
                     time.sleep(10)
                     continue
 
+            # Auto refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > 1800:
                 stream["VIDEO_IDS"] = load_playlist_ids(name, force=True)
                 stream["INDEX"] = 0
@@ -216,20 +231,45 @@ def stream_worker(name):
 
             cmd = (
                 f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
-                f'--cookies "{COOKIES_PATH}" -o - --quiet --no-warnings | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
+                f'--cookies "{COOKIES_PATH}" --quiet --no-warnings -o - | '
+                f'ffmpeg -hide_banner -loglevel error -i pipe:0 -f mp3 pipe:1'
             )
 
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+            )
+
+            stderr_buffer = []
             while True:
                 chunk = proc.stdout.read(4096)
-                if not chunk: break
+                if not chunk:
+                    break
                 if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
                     stream["QUEUE"].append(chunk)
 
+            # Read all remaining stderr output for diagnostics
+            err_output = proc.stderr.read().decode(errors="ignore").strip()
+            if err_output:
+                stderr_buffer.append(err_output)
+
             proc.wait()
+
+            if proc.returncode != 0:
+                logging.error(f"[{name}] Stream command exited with code {proc.returncode}")
+                if stderr_buffer:
+                    logging.error(f"[{name}] STDERR:\n{''.join(stderr_buffer[-10:])}")
+                failed.add(vid)
+                continue
+
+            if stderr_buffer:
+                logging.info(f"[{name}] Info:\n{''.join(stderr_buffer[-10:])}")
+
         except Exception as e:
-            logging.error(f"[{name}] Worker error: {e}")
+            logging.error(f"[{name}] Worker error: {e}", exc_info=True)
             time.sleep(5)
 
 # -----------------------------
