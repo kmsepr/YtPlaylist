@@ -1,7 +1,7 @@
 # Use a lightweight Python base image
 FROM python:3.11-slim
 
-# Install system dependencies including curl and ffmpeg
+# Install system dependencies including ffmpeg (for audio processing) and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     gcc \
@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
  && rm -rf /var/lib/apt/lists/*
 
-# Install the latest yt-dlp
+# Install the latest yt-dlp binary globally
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp
 
@@ -24,11 +24,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the app code
 COPY . .
 
-# Ensure cookies directory exists if needed
+# Ensure persistent storage directory exists (if your app uses it for cookies, cache, etc.)
 RUN mkdir -p /mnt/data
 
-# Expose port for Flask app
+# Expose the port your Flask app runs on
 EXPOSE 8000
+
+# Use environment variable for FLASK_ENV to avoid dev warnings in production
+ENV FLASK_ENV=production
 
 # Start the Flask app
 CMD ["python", "restream.py"]
