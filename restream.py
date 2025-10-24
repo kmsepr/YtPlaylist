@@ -88,7 +88,7 @@ def download_and_convert(channel, video_url):
 
         subprocess.run([
             "yt-dlp",
-            "-f", "bestaudio",
+            "-f", "91",
             "--output", str(base_path) + ".%(ext)s",
             "--write-thumbnail",
             "--convert-thumbnails", "jpg",
