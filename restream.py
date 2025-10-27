@@ -328,17 +328,28 @@ def listen_radio(name):
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+    if name not in STREAMS:
         abort(404)
-    path = STREAMS[name]["CURRENT_FILE"]
+
+    path = STREAMS[name].get("CURRENT_FILE")
+    if not path or not os.path.exists(path):
+        # Not ready yet
+        return Response(
+            "Radio stream not ready — please wait a minute for initial caching.",
+            status=503,
+            mimetype="text/plain"
+        )
+
     def generate():
-        while True:
-            with open(path, "rb") as f:
+        with open(path, "rb") as f:
+            while True:
                 chunk = f.read(4096)
-                while chunk:
-                    yield chunk
-                    chunk = f.read(4096)
+                if not chunk:
+                    break
+                yield chunk
+
     return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+
 
 # ==============================================================
 # 🚀 START SERVER
