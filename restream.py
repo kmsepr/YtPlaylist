@@ -1,12 +1,15 @@
 import os, time, json, threading, subprocess, logging, requests
-from flask import Flask, Response, render_template_string, abort
+from flask import Flask, Response, render_template_string, abort, stream_with_context
+from logging.handlers import RotatingFileHandler
+from collections import deque
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
-# -----------------------
-# TV Streams (direct m3u8)
-# -----------------------
+# ==============================================================
+# 📺 TV + YouTube Live SECTION (original)
+# ==============================================================
+
 TV_STREAMS = {
     "safari_tv": "https://j78dp346yq5r-hls-live.5centscdn.com/safari/live.stream/chunks.m3u8",
     "dd_sports": "https://cdn-6.pishow.tv/live/13/master.m3u8",
@@ -18,9 +21,6 @@ TV_STREAMS = {
     "star_sports": "http://87.255.35.150:18828/",
 }
 
-# -----------------------
-# YouTube Live Channels
-# -----------------------
 YOUTUBE_STREAMS = {
     "asianet_news": "https://www.youtube.com/@asianetnews/live",
     "media_one": "https://www.youtube.com/@MediaoneTVLive/live",
@@ -46,9 +46,6 @@ YOUTUBE_STREAMS = {
     "suprabhatam": "https://www.youtube.com/@suprabhaatham_online/live",
 }
 
-# -----------------------
-# Channel Logos
-# -----------------------
 CHANNEL_LOGOS = {
     "star_sports": "https://imgur.com/5En7pOI.png",
     "safari_tv": "https://i.imgur.com/dSOfYyh.png",
@@ -65,9 +62,6 @@ CACHE = {}
 LIVE_STATUS = {}
 COOKIES_FILE = "/mnt/data/cookies.txt"
 
-# -----------------------
-# Extract YouTube HLS URL
-# -----------------------
 def get_youtube_live_url(youtube_url: str):
     try:
         cmd = ["yt-dlp", "-f", "best[height<=360]", "-g", youtube_url]
@@ -81,9 +75,6 @@ def get_youtube_live_url(youtube_url: str):
         logging.warning(f"yt-dlp error for {youtube_url}: {e}")
     return None
 
-# -----------------------
-# Background Refresh Thread
-# -----------------------
 def refresh_stream_urls():
     while True:
         logging.info("🔄 Refreshing YouTube live URLs...")
@@ -98,19 +89,12 @@ def refresh_stream_urls():
 
 threading.Thread(target=refresh_stream_urls, daemon=True).start()
 
-# -----------------------
-# Home Page
-# -----------------------
 @app.route("/")
 def home():
     tv_channels = list(TV_STREAMS.keys())
     youtube_live = [n for n, live in LIVE_STATUS.items() if live]
-
-    html = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    html = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>📺 Live TV & YouTube</title>
 <style>
 body{background:#000;color:#fff;font-family:sans-serif;text-align:center;margin:0}
@@ -121,77 +105,51 @@ h1{color:#0ff;margin:15px 0}
 .card img{width:100%;height:100px;object-fit:contain;border-radius:10px;background:#000}
 a{color:#0ff;text-decoration:none;margin:4px;display:inline-block}
 a:hover{color:#ff0}
-</style>
-</head>
-<body>
+</style></head><body>
 <h1>📡 Live Channels</h1>
 <h2>TV Channels</h2>
 <div class="grid">
 {% for c in tv_channels %}
 <div class="card">
-<img src="{{ logos.get(c) }}">
-<b>{{ c.replace('_',' ').title() }}</b><br>
+<img src="{{ logos.get(c) }}"><b>{{ c.replace('_',' ').title() }}</b><br>
 <a href="/watch/{{ c }}">▶ Watch</a>
 <a href="/audio/{{ c }}">🎵 Audio</a>
-</div>
-{% endfor %}
-</div>
-
+</div>{% endfor %}</div>
 <h2>YouTube Live</h2>
 <div class="grid">
 {% for c in youtube_channels %}
 <div class="card">
-<img src="{{ logos.get(c) }}">
-<b>{{ c.replace('_',' ').title() }}</b><br>
+<img src="{{ logos.get(c) }}"><b>{{ c.replace('_',' ').title() }}</b><br>
 <a href="/watch/{{ c }}">▶ Watch</a>
 <a href="/audio/{{ c }}">🎵 Audio</a>
-</div>
-{% endfor %}
-</div>
-</body>
-</html>
-"""
+</div>{% endfor %}</div>
+<h2>🎧 YouTube Radio</h2>
+<a href="/radio" style="color:#0ff;border:1px solid #0ff;padding:10px;border-radius:8px;display:inline-block">🎶 Open Radio</a>
+</body></html>"""
     return render_template_string(html, tv_channels=tv_channels, youtube_channels=youtube_live, logos=CHANNEL_LOGOS)
 
-# -----------------------
-# Watch Route
-# -----------------------
 @app.route("/watch/<channel>")
 def watch(channel):
     url = TV_STREAMS.get(channel) or CACHE.get(channel)
     if not url:
         return "Channel not available", 503
-
-    return f"""
-<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
+    return f"""<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
 <script src='https://cdn.jsdelivr.net/npm/hls.js@latest'></script>
 <style>body{{background:#000;color:#fff;text-align:center}}video{{width:95%;max-width:720px}}</style></head>
 <body><h2>{channel.replace('_',' ').title()}</h2>
 <video id='v' controls autoplay playsinline></video>
-<script>
-if(Hls.isSupported()){{let h=new Hls();h.loadSource("{url}");h.attachMedia(document.getElementById('v'));}}
-else{{document.getElementById('v').src="{url}";}}
-</script>
-<a href='/'>⬅ Home</a>
-</body></html>
-"""
+<script>if(Hls.isSupported()){{let h=new Hls();h.loadSource("{url}");h.attachMedia(document.getElementById('v'));}}
+else{{document.getElementById('v').src="{url}";}}</script>
+<a href='/'>⬅ Home</a></body></html>"""
 
-# -----------------------
-# Unified Audio Route (TV + YouTube)
-# -----------------------
 @app.route("/audio/<channel>")
 def audio_only(channel):
     url = TV_STREAMS.get(channel) or CACHE.get(channel)
     if not url:
         return f"Channel '{channel}' not ready or offline", 503
-
     logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
-
     def generate():
-        cmd = [
-            "ffmpeg", "-i", url,
-            "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"
-        ]
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
@@ -201,11 +159,142 @@ def audio_only(channel):
                 yield chunk
         finally:
             proc.terminate()
-
     return Response(generate(), mimetype="audio/mpeg")
 
-# -----------------------
-# Run Server
-# -----------------------
+# ==============================================================
+# 🎶 YouTube Radio SECTION (added)
+# ==============================================================
+
+LOG_PATH = "/mnt/data/radio.log"
+COOKIES_PATH = COOKIES_FILE
+CACHE_FILE = "/mnt/data/playlist_cache.json"
+DOWNLOAD_DIR = "/mnt/data/radio_cache"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
+logging.getLogger().addHandler(handler)
+
+PLAYLISTS = {
+    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
+}
+
+STREAMS = {}
+REFRESH_INTERVAL = 1800
+DOWNLOAD_INTERVAL = 3600
+
+RADIO_HOME_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
+<title>YouTube Radio</title><style>
+body{background:#000;color:#0f0;text-align:center;font-family:sans-serif}
+a{color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:10px;display:block;border-radius:8px}
+</style></head><body>
+<h2>🎧 YouTube Radio</h2>
+{% for n in playlists %}<a href="/listen/{{n}}">▶️ {{n|capitalize}}</a>{% endfor %}
+<a href="/">⬅ Back to Live TV</a></body></html>"""
+
+PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{{name|capitalize}}</title></head>
+<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif">
+<h3>🎶 {{name|capitalize}} Radio</h3>
+<audio controls autoplay style="width:90%;margin-top:20px">
+<source src="/stream/{{name}}" type="audio/mpeg"></audio>
+<p>Now playing cached MP3 (updates hourly)</p>
+<a href="/radio">⬅ Back</a></body></html>"""
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try: return json.load(open(CACHE_FILE))
+        except Exception: return {}
+    return {}
+
+def save_cache(data):
+    try: json.dump(data, open(CACHE_FILE, "w"))
+    except Exception as e: logging.error(e)
+
+CACHE_RADIO = load_cache()
+
+def load_playlist_ids(name, force=False):
+    now = time.time()
+    cached = CACHE_RADIO.get(name, {})
+    if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
+        return cached["ids"]
+    url = PLAYLISTS[name]
+    try:
+        logging.info(f"[{name}] Refreshing playlist...")
+        res = subprocess.run(
+            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
+            capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        ids = [e["id"] for e in data.get("entries", []) if "id" in e]
+        ids.reverse()
+        CACHE_RADIO[name] = {"ids": ids, "time": now}
+        save_cache(CACHE_RADIO)
+        logging.info(f"[{name}] Cached {len(ids)} videos (latest first).")
+        return ids
+    except Exception as e:
+        logging.error(f"[{name}] Playlist error: {e}")
+        return cached.get("ids", [])
+
+def stream_worker(name):
+    stream = STREAMS[name]
+    while True:
+        try:
+            ids = stream["IDS"]
+            if not ids:
+                ids = load_playlist_ids(name, True)
+                stream["IDS"] = ids
+            if not ids:
+                time.sleep(60); continue
+            vid = ids[stream["INDEX"] % len(ids)]
+            stream["INDEX"] += 1
+            url = f"https://www.youtube.com/watch?v={vid}"
+            outfile = os.path.join(DOWNLOAD_DIR, f"{name}.mp3")
+            logging.info(f"[{name}] ⬇️ Downloading new track: {url}")
+            subprocess.run([
+                "yt-dlp", "-f", "bestaudio/best", "--cookies", COOKIES_PATH,
+                "--extract-audio", "--audio-format", "mp3", "-o", outfile, url
+            ], check=True)
+            logging.info(f"[{name}] ✅ Track downloaded to {outfile}")
+            stream["CURRENT_FILE"] = outfile
+            stream["LAST_REFRESH"] = time.time()
+            for _ in range(int(DOWNLOAD_INTERVAL / 10)):
+                time.sleep(10)
+                if time.time() - CACHE_RADIO.get(name, {}).get("time", 0) > REFRESH_INTERVAL:
+                    load_playlist_ids(name, True)
+        except Exception as e:
+            logging.error(f"[{name}] Worker error: {e}")
+            time.sleep(30)
+
+@app.route("/radio")
+def radio_home():
+    return render_template_string(RADIO_HOME_HTML, playlists=PLAYLISTS.keys())
+
+@app.route("/listen/<name>")
+def listen_radio(name):
+    if name not in PLAYLISTS:
+        abort(404)
+    return render_template_string(PLAYER_HTML, name=name)
+
+@app.route("/stream/<name>")
+def stream_audio(name):
+    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+        abort(404)
+    path = STREAMS[name]["CURRENT_FILE"]
+    def generate():
+        while True:
+            with open(path, "rb") as f:
+                chunk = f.read(4096)
+                while chunk:
+                    yield chunk
+                    chunk = f.read(4096)
+    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+
+# ==============================================================
+# 🚀 START SERVER
+# ==============================================================
+
 if __name__ == "__main__":
+    for name in PLAYLISTS:
+        STREAMS[name] = {"IDS": load_playlist_ids(name), "INDEX": 0, "CURRENT_FILE": None, "LAST_REFRESH": 0}
+        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
+    logging.info("🚀 Live TV + YouTube + Radio server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
