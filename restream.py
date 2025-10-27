@@ -74,9 +74,10 @@ def load_playlist_ids(name, force=False):
             capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
         ids = [e["id"] for e in data.get("entries", []) if "id" in e]
+        ids.reverse()  # 🔁 latest video first
         CACHE[name] = {"ids": ids, "time": now}
         save_cache(CACHE)
-        logging.info(f"[{name}] Cached {len(ids)} videos.")
+        logging.info(f"[{name}] Cached {len(ids)} videos (latest first).")
         return ids
     except Exception as e:
         logging.error(f"[{name}] Playlist error: {e}")
