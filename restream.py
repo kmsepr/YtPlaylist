@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 app = Flask(__name__)
 
 # ==============================================================
-# 📺 TV + YouTube Live SECTION (original)
+# 📺 TV + YouTube Live SECTION
 # ==============================================================
 
 TV_STREAMS = {
@@ -24,25 +24,11 @@ YOUTUBE_STREAMS = {
     "asianet_news": "https://www.youtube.com/@asianetnews/live",
     "media_one": "https://www.youtube.com/@MediaoneTVLive/live",
     "shajahan_rahmani": "https://www.youtube.com/@ShajahanRahmaniOfficial/live",
-    "qsc_mukkam": "https://www.youtube.com/c/quranstudycentremukkam/live",
-    "valiyudheen_faizy": "https://www.youtube.com/@voiceofvaliyudheenfaizy600/live",
-    "skicr_tv": "https://www.youtube.com/@SKICRTV/live",
-    "yaqeen_institute": "https://www.youtube.com/@yaqeeninstituteofficial/live",
-    "bayyinah_tv": "https://www.youtube.com/@bayyinah/live",
-    "eft_guru": "https://www.youtube.com/@EFTGuru-ql8dk/live",
-    "unacademy_ias": "https://www.youtube.com/@UnacademyIASEnglish/live",
-    "studyiq_hindi": "https://www.youtube.com/@StudyIQEducationLtd/live",
-    "aljazeera_arabic": "https://www.youtube.com/@aljazeera/live",
-    "aljazeera_english": "https://www.youtube.com/@AlJazeeraEnglish/live",
-    "entri_degree": "https://www.youtube.com/@EntriDegreeLevelExams/live",
     "xylem_psc": "https://www.youtube.com/@XylemPSC/live",
-    "xylem_sslc": "https://www.youtube.com/@XylemSSLC2023/live",
-    "entri_app": "https://www.youtube.com/@entriapp/live",
-    "entri_ias": "https://www.youtube.com/@EntriIAS/live",
-    "studyiq_english": "https://www.youtube.com/@studyiqiasenglish/live",
-    "voice_rahmani": "https://www.youtube.com/@voiceofrahmaniyya5828/live",
     "kas_ranker": "https://www.youtube.com/@freepscclasses/live",
-    "suprabhatam": "https://www.youtube.com/@suprabhaatham_online/live",
+    "entri_app": "https://www.youtube.com/@entriapp/live",
+    "unacademy_ias": "https://www.youtube.com/@UnacademyIASEnglish/live",
+    "yaqeen_institute": "https://www.youtube.com/@yaqeeninstituteofficial/live",
 }
 
 CHANNEL_LOGOS = {
@@ -61,10 +47,9 @@ CACHE = {}
 LIVE_STATUS = {}
 COOKIES_FILE = "/mnt/data/cookies.txt"
 
-
 def get_youtube_live_url(youtube_url: str):
     try:
-        cmd = ["yt-dlp", "-f", "best[height<=360]", "-g", youtube_url]
+        cmd = ["yt-dlp", "-f", "best[height<=480]", "-g", youtube_url]
         if os.path.exists(COOKIES_FILE):
             cmd.insert(1, "--cookies")
             cmd.insert(2, COOKIES_FILE)
@@ -74,7 +59,6 @@ def get_youtube_live_url(youtube_url: str):
     except Exception as e:
         logging.warning(f"yt-dlp error for {youtube_url}: {e}")
     return None
-
 
 def refresh_stream_urls():
     while True:
@@ -88,9 +72,7 @@ def refresh_stream_urls():
                 LIVE_STATUS[name] = False
         time.sleep(90)
 
-
 threading.Thread(target=refresh_stream_urls, daemon=True).start()
-
 
 @app.route("/")
 def home():
@@ -131,7 +113,6 @@ a:hover{color:#ff0}
 </body></html>"""
     return render_template_string(html, tv_channels=tv_channels, youtube_channels=youtube_live, logos=CHANNEL_LOGOS)
 
-
 @app.route("/watch/<channel>")
 def watch(channel):
     url = TV_STREAMS.get(channel) or CACHE.get(channel)
@@ -146,15 +127,13 @@ def watch(channel):
 else{{document.getElementById('v').src="{url}";}}</script>
 <a href='/'>⬅ Home</a></body></html>"""
 
-
 @app.route("/audio/<channel>")
 def audio_only(channel):
     url = TV_STREAMS.get(channel) or CACHE.get(channel)
     if not url:
         return f"Channel '{channel}' not ready or offline", 503
-    logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
     def generate():
-        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "64k", "-f", "mp3", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
@@ -167,15 +146,17 @@ def audio_only(channel):
     return Response(generate(), mimetype="audio/mpeg")
 
 # ==============================================================
-# 🎶 YouTube Radio SECTION (direct stream, no caching)
+# 🎶 YouTube Radio SECTION (Stream-only, no cache)
 # ==============================================================
+
+PLAYLISTS = {
+    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
+}
 
 def get_playlist_ids(url):
     try:
-        res = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url],
-            capture_output=True, text=True, check=True
-        )
+        res = subprocess.run(["yt-dlp", "--flat-playlist", "-J", url],
+                             capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
         ids = [e["id"] for e in data.get("entries", []) if "id" in e]
         ids.reverse()
@@ -188,16 +169,11 @@ def get_audio_url(video_id):
     try:
         res = subprocess.run(
             ["yt-dlp", "-f", "bestaudio[ext=m4a]", "-g", f"https://www.youtube.com/watch?v={video_id}"],
-            capture_output=True, text=True, check=True
-        )
+            capture_output=True, text=True, check=True)
         return res.stdout.strip()
     except Exception as e:
         logging.error(f"Audio URL fetch failed: {e}")
         return None
-
-PLAYLISTS = {
-    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-}
 
 @app.route("/radio")
 def radio_home():
@@ -238,5 +214,5 @@ def listen_radio(name):
 # ==============================================================
 
 if __name__ == "__main__":
-    logging.info("🚀 Live TV + YouTube + Radio server running at http://0.0.0.0:8000")
+    logging.info("🚀 Live TV + YouTube + Radio (no-cache) server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
