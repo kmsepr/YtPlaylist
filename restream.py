@@ -142,64 +142,14 @@ def watch(channel):
 else{{document.getElementById('v').src="{url}";}}</script>
 <a href='/'>⬅ Home</a></body></html>"""
 
-
-       # -----------------------
-# Unified Audio Route (TV + YouTube) with Player + Download Button
-# -----------------------
 @app.route("/audio/<channel>")
 def audio_only(channel):
     url = TV_STREAMS.get(channel) or CACHE.get(channel)
     if not url:
         return f"Channel '{channel}' not ready or offline", 503
-
-    # Audio stream route
-    stream_url = f"/stream/{channel}"
-
-    html = f"""
-    <html>
-    <head>
-    <meta name='viewport' content='width=device-width,initial-scale=1'>
-    <title>{channel.replace('_',' ').title()} - Audio</title>
-    <style>
-    body{{background:#000;color:#fff;text-align:center;font-family:sans-serif;margin:0;padding:0}}
-    h2{{color:#0ff;margin-top:20px}}
-    audio{{width:90%;margin-top:20px}}
-    a,button{{color:#000;background:#0ff;border:none;padding:10px 20px;
-              border-radius:8px;text-decoration:none;display:inline-block;margin:15px}}
-    a:hover,button:hover{{background:#ff0;color:#000}}
-    </style>
-    </head>
-    <body>
-    <h2>🎧 {channel.replace('_',' ').title()}</h2>
-    <audio controls autoplay>
-        <source src="{stream_url}" type="audio/mpeg">
-        Your browser does not support the audio element.
-    </audio>
-    <br>
-    <a href="{stream_url}" download="{channel}.mp3">⬇ Download</a>
-    <br>
-    <a href="/">⬅ Home</a>
-    </body>
-    </html>
-    """
-    return html
-
-# -----------------------
-# Direct Stream Route for Downloading
-# -----------------------
-@app.route("/stream/<channel>")
-def stream_audio(channel):
-    url = TV_STREAMS.get(channel) or CACHE.get(channel)
-    if not url:
-        return f"Channel '{channel}' not ready or offline", 503
-
     logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
-
     def generate():
-        cmd = [
-            "ffmpeg", "-i", url,
-            "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"
-        ]
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
@@ -209,9 +159,7 @@ def stream_audio(channel):
                 yield chunk
         finally:
             proc.terminate()
-
     return Response(generate(), mimetype="audio/mpeg")
-
 
 # ==============================================================
 # 🎶 YouTube Radio SECTION (added)
@@ -328,28 +276,17 @@ def listen_radio(name):
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in STREAMS:
+    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
         abort(404)
-
-    path = STREAMS[name].get("CURRENT_FILE")
-    if not path or not os.path.exists(path):
-        # Not ready yet
-        return Response(
-            "Radio stream not ready — please wait a minute for initial caching.",
-            status=503,
-            mimetype="text/plain"
-        )
-
+    path = STREAMS[name]["CURRENT_FILE"]
     def generate():
-        with open(path, "rb") as f:
-            while True:
+        while True:
+            with open(path, "rb") as f:
                 chunk = f.read(4096)
-                if not chunk:
-                    break
-                yield chunk
-
+                while chunk:
+                    yield chunk
+                    chunk = f.read(4096)
     return Response(stream_with_context(generate()), mimetype="audio/mpeg")
-
 
 # ==============================================================
 # 🚀 START SERVER
