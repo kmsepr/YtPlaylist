@@ -1,152 +1,222 @@
-import subprocess
-import json
-import time
-import random
-import os
-from datetime import datetime
-from flask import Flask, Response, stream_with_context, abort
+import os, time, json, threading, subprocess, logging
+from collections import deque
+from flask import Flask, Response, render_template_string, stream_with_context, abort
+from logging.handlers import RotatingFileHandler
 
-app = Flask(__name__)
-
-# 📂 Cookies file (Koyeb)
+# -----------------------------
+# CONFIG
+# -----------------------------
+LOG_PATH = "/mnt/data/radio.log"
 COOKIES_PATH = "/mnt/data/cookies.txt"
+CACHE_FILE = "/mnt/data/playlist_cache.json"
+MAX_QUEUE_SIZE = 80
+REFRESH_INTERVAL = 1800  # 30 min
 
-# 🎧 Define all playlists here
 PLAYLISTS = {
-    "kasranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-    # Add more here later
+    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
+    
 }
 
-# 📦 Cache directory
-CACHE_DIR = "/mnt/data"
-CACHE_EXPIRY_HOURS = 6
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+handler = RotatingFileHandler(LOG_PATH, maxBytes=3*1024*1024, backupCount=2)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), handler]
+)
 
+app = Flask(__name__)
+STREAMS, CACHE = {}, {}
 
-# ---------------------------
-# 🔹 Helper Functions
-# ---------------------------
-def get_cache_path(channel):
-    return os.path.join(CACHE_DIR, f"cache_{channel}.json")
+# -----------------------------
+# HTML UI
+# -----------------------------
+HOME_HTML = """
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Radio</title>
+<style>
+body{background:#000;color:#0f0;font-family:sans-serif;margin:0;padding:20px;text-align:center;}
+.card{border:1px solid #0f0;border-radius:12px;margin:15px;padding:15px;display:inline-block;width:200px;background:#010;}
+a{color:#0f0;text-decoration:none;}
+h2{color:#0f0;margin-bottom:10px;}
+.btn{display:inline-block;padding:8px 14px;border:1px solid #0f0;border-radius:8px;margin-top:8px;}
+</style>
+</head>
+<body>
+<h2>🎧 YouTube Radio</h2>
+{% for name in playlists %}
+<div class="card">
+  <h3>{{name|capitalize}}</h3>
+  <a href="/listen/{{name}}" class="btn">▶️ Play</a>
+  <a href="/stream/{{name}}" class="btn">⬇️ MP3</a>
+</div>
+{% endfor %}
+</body>
+</html>
+"""
 
+PLAYER_HTML = """
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{name|capitalize}} Radio</title>
+<style>
+body{background:#000;color:#0f0;font-family:sans-serif;text-align:center;margin:0;padding:20px;}
+audio{width:90%;margin-top:20px;}
+a{color:#0f0;text-decoration:none;}
+</style>
+</head>
+<body>
+<h2>🎶 {{name|capitalize}} Radio</h2>
+<audio controls autoplay>
+  <source src="/stream/{{name}}" type="audio/mpeg">
+</audio>
+<p><a href="/">⬅ Back</a></p>
+</body>
+</html>
+"""
 
-def load_cached_playlist(channel):
-    """Return cached playlist if still valid"""
-    path = get_cache_path(channel)
-    if not os.path.exists(path):
-        return None
-    age_hours = (time.time() - os.path.getmtime(path)) / 3600
-    if age_hours > CACHE_EXPIRY_HOURS:
-        print(f"🕒 Cache expired for {channel} ({age_hours:.1f}h old)")
-        return None
+# -----------------------------
+# CACHE HELPERS
+# -----------------------------
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Cache load failed: {e}")
+    return {}
+
+def save_cache():
     try:
-        with open(path, "r") as f:
-            data = json.load(f)
-            print(f"✅ Loaded {len(data)} items from cache for {channel}")
-            return data
+        with open(CACHE_FILE, "w") as f:
+            json.dump(CACHE, f)
     except Exception as e:
-        print("⚠️ Cache read error:", e)
-        return None
+        logging.error(f"Cache save failed: {e}")
 
+CACHE = load_cache()
 
-def save_playlist_cache(channel, videos):
-    """Write playlist to cache"""
+# -----------------------------
+# PLAYLIST HANDLING
+# -----------------------------
+def load_playlist_ids(name, force=False):
+    now = time.time()
+    cached = CACHE.get(name, {})
+    if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
+        return cached["ids"]
+
+    url = PLAYLISTS[name]
     try:
-        with open(get_cache_path(channel), "w") as f:
-            json.dump(videos, f)
-        print(f"💾 Saved {len(videos)} items to cache for {channel}")
+        logging.info(f"[{name}] Refreshing playlist IDs...")
+        res = subprocess.run(
+            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+        )
+        data = json.loads(res.stdout)
+        ids = [e["id"] for e in data.get("entries", []) if not e.get("private")]
+        CACHE[name] = {"ids": ids, "time": now}
+        save_cache()
+        logging.info(f"[{name}] Cached {len(ids)} videos.")
+        return ids
     except Exception as e:
-        print("⚠️ Cache write error:", e)
+        logging.error(f"[{name}] Playlist load failed: {e}")
+        return cached.get("ids", [])
 
+# -----------------------------
+# STREAM WORKER
+# -----------------------------
+def stream_worker(name):
+    stream = STREAMS[name]
+    failed = set()
 
-def fetch_playlist_videos(playlist_url, channel):
-    """Fetch fresh playlist via yt-dlp, then cache"""
-    print(f"📜 Fetching fresh playlist for {channel} ...", flush=True)
-    result = subprocess.run(
-        ["yt-dlp", "--cookies", COOKIES_PATH, "-j", "--flat-playlist", playlist_url],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print(f"❌ Playlist fetch failed for {channel}:", result.stderr)
-        return []
-    try:
-        videos = [json.loads(line)["url"] for line in result.stdout.splitlines() if line.strip()]
-        save_playlist_cache(channel, videos)
-        return videos
-    except Exception as e:
-        print(f"⚠️ Parse error for {channel}: {e}")
-        return []
+    while True:
+        try:
+            if not stream["IDS"]:
+                stream["IDS"] = load_playlist_ids(name, True)
+                stream["INDEX"] = 0
+                failed.clear()
+                time.sleep(2)
+                continue
 
+            # refresh after 30 min
+            if time.time() - stream["LAST_REFRESH"] > REFRESH_INTERVAL:
+                stream["IDS"] = load_playlist_ids(name, True)
+                stream["INDEX"] = 0
+                stream["LAST_REFRESH"] = time.time()
+                failed.clear()
 
-def get_playlist_videos(channel, playlist_url):
-    """Use cache if valid, else fetch"""
-    cached = load_cached_playlist(channel)
-    if cached:
-        return cached
-    videos = fetch_playlist_videos(playlist_url, channel)
-    return videos if videos else cached or []
+            vid = stream["IDS"][stream["INDEX"] % len(stream["IDS"])]
+            stream["INDEX"] += 1
+            url = f"https://www.youtube.com/watch?v={vid}"
+            logging.info(f"[{name}] ▶️ {url}")
 
+            cmd = (
+                f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
+                f'--cookies "{COOKIES_PATH}" -o - --quiet --no-warnings | '
+                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
+            )
 
-def get_audio_url(video_id):
-    result = subprocess.run(
-        ["yt-dlp", "--cookies", COOKIES_PATH, "-f", "bestaudio", "-g", f"https://www.youtube.com/watch?v={video_id}"],
-        capture_output=True, text=True
-    )
-    return result.stdout.strip() if result.returncode == 0 else None
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
+                    stream["QUEUE"].append(chunk)
 
+            proc.stdout.close()
+            proc.wait()
+        except Exception as e:
+            logging.error(f"[{name}] Worker error: {e}")
+            time.sleep(5)
 
-# ---------------------------
-# 🔹 Stream Route
-# ---------------------------
-@app.route("/radio/<channel>")
-def radio_stream(channel):
-    if channel not in PLAYLISTS:
-        return abort(404, f"No such channel: {channel}")
+# -----------------------------
+# FLASK ROUTES
+# -----------------------------
+@app.route("/")
+def home():
+    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
 
-    playlist_url = PLAYLISTS[channel]
-    print(f"🎧 Starting stream for {channel}: {playlist_url}", flush=True)
+@app.route("/listen/<name>")
+def listen(name):
+    if name not in PLAYLISTS:
+        abort(404)
+    return render_template_string(PLAYER_HTML, name=name)
+
+@app.route("/stream/<name>")
+def stream_audio(name):
+    if name not in STREAMS:
+        abort(404)
+    stream = STREAMS[name]
 
     def generate():
         while True:
-            videos = get_playlist_videos(channel, playlist_url)
-            if not videos:
-                yield b""
-                return
-            random.shuffle(videos)
-            for vid in videos:
-                audio_url = get_audio_url(vid)
-                if not audio_url:
-                    continue
-                print(f"▶️ Now playing {vid} from {channel}", flush=True)
-                process = subprocess.Popen(
-                    ["ffmpeg", "-re", "-i", audio_url, "-vn", "-c:a", "libmp3lame",
-                     "-b:a", "128k", "-f", "mp3", "-"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL
-                )
-                try:
-                    for chunk in iter(lambda: process.stdout.read(4096), b""):
-                        yield chunk
-                except GeneratorExit:
-                    process.kill()
-                    return
-                finally:
-                    process.kill()
-            time.sleep(5)
+            if stream["QUEUE"]:
+                yield stream["QUEUE"].popleft()
+            else:
+                time.sleep(0.1)
 
-    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+    headers = {"Content-Type": "audio/mpeg"}
+    return Response(stream_with_context(generate()), headers=headers)
 
-
-# ---------------------------
-# 🔹 Homepage
-# ---------------------------
-@app.route("/")
-def home():
-    html = "<h2>🎙️ YouTube Playlist Radio (Cached)</h2><ul>"
-    for name in PLAYLISTS:
-        html += f"<li><a href='/radio/{name}' target='_blank'>{name}</a></li>"
-    html += "</ul><p>Cache refresh every {CACHE_EXPIRY_HOURS} hours 🕒</p>"
-    return html
-
-
+# -----------------------------
+# MAIN
+# -----------------------------
 if __name__ == "__main__":
+    for name in PLAYLISTS:
+        STREAMS[name] = {
+            "IDS": load_playlist_ids(name),
+            "INDEX": 0,
+            "QUEUE": deque(),
+            "LAST_REFRESH": time.time()
+        }
+        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
+
+    logging.info("🚀 YouTube Radio started!")
+    logging.info(f"UI available at http://0.0.0.0:5000/")
     app.run(host="0.0.0.0", port=8000)
