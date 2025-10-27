@@ -14,7 +14,8 @@ REFRESH_INTERVAL = 1800  # 30 min
 
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-    
+    "malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
+    "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -39,7 +40,7 @@ HOME_HTML = """
 <title>YouTube Radio</title>
 <style>
 body{background:#000;color:#0f0;font-family:sans-serif;margin:0;padding:20px;text-align:center;}
-.card{border:1px solid #0f0;border-radius:12px;margin:15px;padding:15px;display:inline-block;width:200px;background:#010;}
+.card{border:1px solid #0f0;border-radius:12px;margin:15px;padding:15px;display:inline-block;width:220px;background:#010;}
 a{color:#0f0;text-decoration:none;}
 h2{color:#0f0;margin-bottom:10px;}
 .btn{display:inline-block;padding:8px 14px;border:1px solid #0f0;border-radius:8px;margin-top:8px;}
@@ -49,7 +50,7 @@ h2{color:#0f0;margin-bottom:10px;}
 <h2>🎧 YouTube Radio</h2>
 {% for name in playlists %}
 <div class="card">
-  <h3>{{name|capitalize}}</h3>
+  <h3>{{name.replace('_',' ')|capitalize}}</h3>
   <a href="/listen/{{name}}" class="btn">▶️ Play</a>
   <a href="/stream/{{name}}" class="btn">⬇️ MP3</a>
 </div>
@@ -143,7 +144,7 @@ def stream_worker(name):
                 time.sleep(2)
                 continue
 
-            # refresh after 30 min
+            # Auto-refresh every 30 min
             if time.time() - stream["LAST_REFRESH"] > REFRESH_INTERVAL:
                 stream["IDS"] = load_playlist_ids(name, True)
                 stream["INDEX"] = 0
@@ -155,13 +156,16 @@ def stream_worker(name):
             url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ {url}")
 
+            # ✅ Flexible, safe command
             cmd = (
-                f'yt-dlp -f bestaudio[ext=m4a]/bestaudio "{url}" '
-                f'--cookies "{COOKIES_PATH}" -o - --quiet --no-warnings | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -f mp3 pipe:1'
+                f'yt-dlp --no-playlist --no-cache-dir '
+                f'--extract-audio --audio-format mp3 --audio-quality 0 '
+                f'--cookies "{COOKIES_PATH}" '
+                f'-f "bestaudio/best" "{url}" -o - '
+                f'--quiet --no-warnings'
             )
 
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             while True:
                 chunk = proc.stdout.read(4096)
                 if not chunk:
@@ -169,7 +173,13 @@ def stream_worker(name):
                 if len(stream["QUEUE"]) < MAX_QUEUE_SIZE:
                     stream["QUEUE"].append(chunk)
 
+            err = proc.stderr.read().decode(errors="ignore")
+            if "Requested format" in err or "403" in err or "Error" in err:
+                logging.warning(f"[{name}] ⚠️ Skipping failed video: {url}")
+                failed.add(vid)
+
             proc.stdout.close()
+            proc.stderr.close()
             proc.wait()
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
@@ -217,6 +227,6 @@ if __name__ == "__main__":
         }
         threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
 
-    logging.info("🚀 YouTube Radio started!")
-    logging.info(f"UI available at http://0.0.0.0:5000/")
-    app.run(host="0.0.0.0", port=8000)
+    logging.info("🚀 YouTube Radio started successfully!")
+    logging.info(f"🌐 Open http://0.0.0.0:5000 to access the UI.")
+    app.run(host="0.0.0.0", port=5000)
