@@ -162,14 +162,14 @@ def audio_only(channel):
     return Response(generate(), mimetype="audio/mpeg")
 
 # ==============================================================
-# 🎶 YouTube Radio SECTION (added)
+# 🎶 YouTube Radio SECTION (queue-based)
 # ==============================================================
 
 LOG_PATH = "/mnt/data/radio.log"
 COOKIES_PATH = COOKIES_FILE
 CACHE_FILE = "/mnt/data/playlist_cache.json"
-DOWNLOAD_DIR = "/mnt/data/radio_cache"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(DOWNLOAD_DIR := "/mnt/data/radio_cache", exist_ok=True)
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
 logging.getLogger().addHandler(handler)
@@ -178,9 +178,9 @@ PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
 }
 
-STREAMS = {}
-REFRESH_INTERVAL = 1800
-DOWNLOAD_INTERVAL = 3600
+STREAMS_RADIO = {}
+MAX_QUEUE = 128
+REFRESH_INTERVAL = 1800  # 30 min
 
 RADIO_HOME_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
 <title>YouTube Radio</title><style>
@@ -197,73 +197,87 @@ PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,ini
 <h3>🎶 {{name|capitalize}} Radio</h3>
 <audio controls autoplay style="width:90%;margin-top:20px">
 <source src="/stream/{{name}}" type="audio/mpeg"></audio>
-<p>Now playing cached MP3 (updates hourly)</p>
+<p>Now streaming low-bitrate MP3 (mono, 40 kbps)</p>
 <a href="/radio">⬅ Back</a></body></html>"""
 
-def load_cache():
+def load_cache_radio():
     if os.path.exists(CACHE_FILE):
-        try: return json.load(open(CACHE_FILE))
-        except Exception: return {}
+        try:
+            return json.load(open(CACHE_FILE))
+        except Exception:
+            return {}
     return {}
 
-def save_cache(data):
-    try: json.dump(data, open(CACHE_FILE, "w"))
-    except Exception as e: logging.error(e)
+def save_cache_radio(data):
+    try:
+        json.dump(data, open(CACHE_FILE, "w"))
+    except Exception as e:
+        logging.error(e)
 
-CACHE_RADIO = load_cache()
+CACHE_RADIO = load_cache_radio()
 
-def load_playlist_ids(name, force=False):
+def load_playlist_ids_radio(name, force=False):
     now = time.time()
     cached = CACHE_RADIO.get(name, {})
     if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
         return cached["ids"]
+
     url = PLAYLISTS[name]
     try:
         logging.info(f"[{name}] Refreshing playlist...")
         res = subprocess.run(
             ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True
+        )
         data = json.loads(res.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e]
-        ids.reverse()
+        ids = [e["id"] for e in data.get("entries", []) if "id" in e][::-1]
         CACHE_RADIO[name] = {"ids": ids, "time": now}
-        save_cache(CACHE_RADIO)
-        logging.info(f"[{name}] Cached {len(ids)} videos (latest first).")
+        save_cache_radio(CACHE_RADIO)
+        logging.info(f"[{name}] Cached {len(ids)} videos.")
         return ids
     except Exception as e:
         logging.error(f"[{name}] Playlist error: {e}")
         return cached.get("ids", [])
 
-def stream_worker(name):
-    stream = STREAMS[name]
+def stream_worker_radio(name):
+    s = STREAMS_RADIO[name]
     while True:
         try:
-            ids = stream["IDS"]
+            ids = s["IDS"]
             if not ids:
-                ids = load_playlist_ids(name, True)
-                stream["IDS"] = ids
+                ids = load_playlist_ids_radio(name, True)
+                s["IDS"] = ids
             if not ids:
-                time.sleep(60); continue
-            vid = ids[stream["INDEX"] % len(ids)]
-            stream["INDEX"] += 1
-            url = f"https://www.youtube.com/watch?v={vid}"
-            outfile = os.path.join(DOWNLOAD_DIR, f"{name}.mp3")
-            logging.info(f"[{name}] ⬇️ Downloading new track: {url}")
-            subprocess.run([
-                "yt-dlp", "-f", "bestaudio/best", "--cookies", COOKIES_PATH,
-                "--extract-audio", "--audio-format", "mp3", "-o", outfile, url
-            ], check=True)
-            logging.info(f"[{name}] ✅ Track downloaded to {outfile}")
-            stream["CURRENT_FILE"] = outfile
-            stream["LAST_REFRESH"] = time.time()
-            for _ in range(int(DOWNLOAD_INTERVAL / 10)):
+                logging.warning(f"[{name}] No playlist ids found; sleeping...")
                 time.sleep(10)
-                if time.time() - CACHE_RADIO.get(name, {}).get("time", 0) > REFRESH_INTERVAL:
-                    load_playlist_ids(name, True)
+                continue
+            vid = ids[s["INDEX"] % len(ids)]
+            s["INDEX"] += 1
+            url = f"https://www.youtube.com/watch?v={vid}"
+            logging.info(f"[{name}] ▶️ {url}")
+
+            cmd = (
+                f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
+                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
+                f'-o - --quiet --no-warnings "{url}" | '
+                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
+            )
+            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                if len(s["QUEUE"]) < MAX_QUEUE:
+                    s["QUEUE"].append(chunk)
+
+            proc.stdout.close()
+            proc.wait()
+            logging.info(f"[{name}] ✅ Finished one track.")
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
-            time.sleep(30)
+            time.sleep(5)
 
+# ---------------- ROUTES ----------------
 @app.route("/radio")
 def radio_home():
     return render_template_string(RADIO_HOME_HTML, playlists=PLAYLISTS.keys())
@@ -276,25 +290,33 @@ def listen_radio(name):
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+    if name not in STREAMS_RADIO:
         abort(404)
-    path = STREAMS[name]["CURRENT_FILE"]
-    def generate():
+    s = STREAMS_RADIO[name]
+
+    def gen():
         while True:
-            with open(path, "rb") as f:
-                chunk = f.read(4096)
-                while chunk:
-                    yield chunk
-                    chunk = f.read(4096)
-    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+            if s["QUEUE"]:
+                yield s["QUEUE"].popleft()
+            else:
+                time.sleep(0.05)
+
+    return Response(stream_with_context(gen()), mimetype="audio/mpeg")
 
 # ==============================================================
 # 🚀 START SERVER
 # ==============================================================
 
 if __name__ == "__main__":
-    for name in PLAYLISTS:
-        STREAMS[name] = {"IDS": load_playlist_ids(name), "INDEX": 0, "CURRENT_FILE": None, "LAST_REFRESH": 0}
-        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
+    # Initialize radio streams
+    for pname in PLAYLISTS:
+        STREAMS_RADIO[pname] = {
+            "IDS": load_playlist_ids_radio(pname),
+            "INDEX": 0,
+            "QUEUE": deque(),
+            "LAST_REFRESH": time.time(),
+        }
+        threading.Thread(target=stream_worker_radio, args=(pname,), daemon=True).start()
+
     logging.info("🚀 Live TV + YouTube + Radio server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
