@@ -2,142 +2,151 @@ import subprocess
 import json
 import time
 import random
-import sys
-from flask import Flask, Response, stream_with_context
+import os
+from datetime import datetime
+from flask import Flask, Response, stream_with_context, abort
 
 app = Flask(__name__)
 
-# 🎧 Your YouTube playlist (KAS Ranker)
-PLAYLIST_URL = "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ"
-
-# 📂 Path to cookies file in Koyeb
+# 📂 Cookies file (Koyeb)
 COOKIES_PATH = "/mnt/data/cookies.txt"
 
+# 🎧 Define all playlists here
+PLAYLISTS = {
+    "kasranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
+    # Add more here later
+}
+
+# 📦 Cache directory
+CACHE_DIR = "/mnt/data"
+CACHE_EXPIRY_HOURS = 6
+
 
 # ---------------------------
-# 🔹 Helper: run subprocess with real-time logs
+# 🔹 Helper Functions
 # ---------------------------
-def run_command(cmd):
-    print(f"\n💻 Running command: {' '.join(cmd)}", flush=True)
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+def get_cache_path(channel):
+    return os.path.join(CACHE_DIR, f"cache_{channel}.json")
+
+
+def load_cached_playlist(channel):
+    """Return cached playlist if still valid"""
+    path = get_cache_path(channel)
+    if not os.path.exists(path):
+        return None
+    age_hours = (time.time() - os.path.getmtime(path)) / 3600
+    if age_hours > CACHE_EXPIRY_HOURS:
+        print(f"🕒 Cache expired for {channel} ({age_hours:.1f}h old)")
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+            print(f"✅ Loaded {len(data)} items from cache for {channel}")
+            return data
+    except Exception as e:
+        print("⚠️ Cache read error:", e)
+        return None
+
+
+def save_playlist_cache(channel, videos):
+    """Write playlist to cache"""
+    try:
+        with open(get_cache_path(channel), "w") as f:
+            json.dump(videos, f)
+        print(f"💾 Saved {len(videos)} items to cache for {channel}")
+    except Exception as e:
+        print("⚠️ Cache write error:", e)
+
+
+def fetch_playlist_videos(playlist_url, channel):
+    """Fetch fresh playlist via yt-dlp, then cache"""
+    print(f"📜 Fetching fresh playlist for {channel} ...", flush=True)
+    result = subprocess.run(
+        ["yt-dlp", "--cookies", COOKIES_PATH, "-j", "--flat-playlist", playlist_url],
+        capture_output=True, text=True
     )
-    output_lines = []
-    for line in iter(process.stdout.readline, ""):
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        output_lines.append(line)
-    process.wait()
-    return "\n".join(output_lines), process.returncode
-
-
-# ---------------------------
-# 🔹 Get playlist video IDs
-# ---------------------------
-def get_playlist_videos(playlist_url):
-    print("\n📜 Fetching playlist videos...", flush=True)
-    output, code = run_command([
-        "yt-dlp", "--cookies", COOKIES_PATH,
-        "-j", "--flat-playlist", playlist_url
-    ])
-    if code != 0:
-        print(f"❌ Playlist fetch failed (code {code})")
+    if result.returncode != 0:
+        print(f"❌ Playlist fetch failed for {channel}:", result.stderr)
         return []
     try:
-        return [json.loads(line)["url"] for line in output.splitlines() if line.strip()]
+        videos = [json.loads(line)["url"] for line in result.stdout.splitlines() if line.strip()]
+        save_playlist_cache(channel, videos)
+        return videos
     except Exception as e:
-        print(f"⚠️ Playlist parse error: {e}")
+        print(f"⚠️ Parse error for {channel}: {e}")
         return []
 
 
-# ---------------------------
-# 🔹 Get direct audio stream URL
-# ---------------------------
+def get_playlist_videos(channel, playlist_url):
+    """Use cache if valid, else fetch"""
+    cached = load_cached_playlist(channel)
+    if cached:
+        return cached
+    videos = fetch_playlist_videos(playlist_url, channel)
+    return videos if videos else cached or []
+
+
 def get_audio_url(video_id):
-    print(f"\n🎵 Resolving audio for video: {video_id}", flush=True)
-    output, code = run_command([
-        "yt-dlp", "--cookies", COOKIES_PATH,
-        "-f", "bestaudio", "-g", f"https://www.youtube.com/watch?v={video_id}"
-    ])
-    if code != 0:
-        print(f"❌ Audio URL fetch failed for {video_id} (code {code})")
-        return None
-    url = output.strip().splitlines()[-1] if output.strip() else None
-    print(f"✅ Got audio URL for {video_id}: {url[:80]}...", flush=True)
-    return url
+    result = subprocess.run(
+        ["yt-dlp", "--cookies", COOKIES_PATH, "-f", "bestaudio", "-g", f"https://www.youtube.com/watch?v={video_id}"],
+        capture_output=True, text=True
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 # ---------------------------
-# 🔹 Radio Stream Endpoint
+# 🔹 Stream Route
 # ---------------------------
-@app.route("/kasradio")
-def kas_radio():
+@app.route("/radio/<channel>")
+def radio_stream(channel):
+    if channel not in PLAYLISTS:
+        return abort(404, f"No such channel: {channel}")
+
+    playlist_url = PLAYLISTS[channel]
+    print(f"🎧 Starting stream for {channel}: {playlist_url}", flush=True)
+
     def generate():
-        playlist = get_playlist_videos(PLAYLIST_URL)
-        if not playlist:
-            print("🚫 No videos found in playlist.")
-            yield b""
-            return
-
-        # Keep looping forever
         while True:
-            random.shuffle(playlist)
-            for vid in playlist:
+            videos = get_playlist_videos(channel, playlist_url)
+            if not videos:
+                yield b""
+                return
+            random.shuffle(videos)
+            for vid in videos:
                 audio_url = get_audio_url(vid)
                 if not audio_url:
-                    print(f"⚠️ Skipping video {vid} (no audio URL)")
                     continue
-
-                print(f"\n▶️ Now streaming: {vid}")
-                ffmpeg_cmd = [
-                    "ffmpeg", "-re", "-i", audio_url,
-                    "-vn", "-c:a", "libmp3lame", "-b:a", "128k",
-                    "-f", "mp3", "-"
-                ]
-                print(f"🎬 Starting FFmpeg: {' '.join(ffmpeg_cmd)}", flush=True)
-
+                print(f"▶️ Now playing {vid} from {channel}", flush=True)
                 process = subprocess.Popen(
-                    ffmpeg_cmd,
+                    ["ffmpeg", "-re", "-i", audio_url, "-vn", "-c:a", "libmp3lame",
+                     "-b:a", "128k", "-f", "mp3", "-"],
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT
+                    stderr=subprocess.DEVNULL
                 )
-
                 try:
                     for chunk in iter(lambda: process.stdout.read(4096), b""):
                         yield chunk
                 except GeneratorExit:
-                    print("🛑 Client disconnected.")
                     process.kill()
                     return
-                except Exception as e:
-                    print(f"⚠️ Stream error: {e}")
                 finally:
                     process.kill()
-
-                print(f"⏭️ Finished {vid}, moving to next video...", flush=True)
-
-            print("🔁 Playlist loop complete, restarting...", flush=True)
             time.sleep(5)
 
     return Response(stream_with_context(generate()), mimetype="audio/mpeg")
 
 
 # ---------------------------
-# 🔹 Root Page / Health Check
+# 🔹 Homepage
 # ---------------------------
 @app.route("/")
 def home():
-    return """
-    <h2>🎙️ KAS Ranker Radio (YouTube Restream)</h2>
-    <p>Status: Running ✅</p>
-    <p>Listen here → <a href="/kasradio">/kasradio</a></p>
-    <p>Logs show real-time yt-dlp + ffmpeg activity in Koyeb console.</p>
-    """
+    html = "<h2>🎙️ YouTube Playlist Radio (Cached)</h2><ul>"
+    for name in PLAYLISTS:
+        html += f"<li><a href='/radio/{name}' target='_blank'>{name}</a></li>"
+    html += "</ul><p>Cache refresh every {CACHE_EXPIRY_HOURS} hours 🕒</p>"
+    return html
 
 
-# ---------------------------
-# 🔹 Entry Point
-# ---------------------------
 if __name__ == "__main__":
-    print("🚀 Starting KAS Ranker YouTube Restream...", flush=True)
     app.run(host="0.0.0.0", port=8000)
