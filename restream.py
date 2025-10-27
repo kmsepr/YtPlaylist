@@ -7,12 +7,17 @@ from logging.handlers import RotatingFileHandler
 LOG_PATH = "/mnt/data/radio.log"
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_FILE = "/mnt/data/playlist_cache.json"
+DOWNLOAD_DIR = "/mnt/data/radio_cache"
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), handler])
+    handlers=[logging.StreamHandler(), handler]
+)
+
 app = Flask(__name__)
 
 PLAYLISTS = {
@@ -20,8 +25,8 @@ PLAYLISTS = {
 }
 
 STREAMS = {}
-MAX_QUEUE = 128
 REFRESH_INTERVAL = 1800  # 30 min
+DOWNLOAD_INTERVAL = 3600  # 1 hour
 
 # ---------------- HTML ----------------
 HOME_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
@@ -41,7 +46,9 @@ PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,ini
 <h3>🎶 {{name|capitalize}} Radio</h3>
 <audio controls autoplay style="width:90%;margin-top:20px">
   <source src="/stream/{{name}}" type="audio/mpeg">
-</audio><p>40 kbps mono MP3 stream</p></body></html>"""
+</audio>
+<p>Now playing cached MP3 (updates hourly)</p>
+</body></html>"""
 
 # ---------------- CACHE ----------------
 def load_cache():
@@ -74,7 +81,7 @@ def load_playlist_ids(name, force=False):
             capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
         ids = [e["id"] for e in data.get("entries", []) if "id" in e]
-        ids.reverse()  # 🔁 latest video first
+        ids.reverse()  # latest first
         CACHE[name] = {"ids": ids, "time": now}
         save_cache(CACHE)
         logging.info(f"[{name}] Cached {len(ids)} videos (latest first).")
@@ -94,55 +101,62 @@ def stream_worker(name):
                 stream["IDS"] = ids
             if not ids:
                 logging.warning(f"[{name}] No videos found, retrying...")
-                time.sleep(10)
+                time.sleep(60)
                 continue
 
             vid = ids[stream["INDEX"] % len(ids)]
             stream["INDEX"] += 1
             url = f"https://www.youtube.com/watch?v={vid}"
-            logging.info(f"[{name}] ▶️ {url}")
+            outfile = os.path.join(DOWNLOAD_DIR, f"{name}.mp3")
 
-            cmd = (
-                f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
-                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
-                f'-o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k '
-                f'-f mp3 -content_type audio/mpeg pipe:1'
-            )
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                if len(stream["QUEUE"]) < MAX_QUEUE:
-                    stream["QUEUE"].append(chunk)
-            proc.stdout.close()
-            proc.wait()
-            logging.info(f"[{name}] ✅ Finished one track.")
+            logging.info(f"[{name}] ⬇️ Downloading new track: {url}")
+            cmd = [
+                "yt-dlp", "-f", "bestaudio/best", "--cookies", COOKIES_PATH,
+                "--extract-audio", "--audio-format", "mp3",
+                "-o", outfile, url
+            ]
+            subprocess.run(cmd, check=True)
+            logging.info(f"[{name}] ✅ Track downloaded to {outfile}")
+
+            stream["CURRENT_FILE"] = outfile
+            stream["LAST_REFRESH"] = time.time()
+
+            # Serve this one for 1 hour
+            for _ in range(int(DOWNLOAD_INTERVAL / 10)):
+                time.sleep(10)
+                # Refresh playlist occasionally
+                if time.time() - CACHE.get(name, {}).get("time", 0) > REFRESH_INTERVAL:
+                    load_playlist_ids(name, True)
+
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
-            time.sleep(5)
+            time.sleep(30)
 
 # ---------------- ROUTES ----------------
 @app.route("/")
-def home(): return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
+def home():
+    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
 
 @app.route("/listen/<name>")
 def listen(name):
-    if name not in PLAYLISTS: abort(404)
+    if name not in PLAYLISTS:
+        abort(404)
     return render_template_string(PLAYER_HTML, name=name)
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in STREAMS: abort(404)
-    s = STREAMS[name]
-    def gen():
-        while True:
-            if s["QUEUE"]:
-                yield s["QUEUE"].popleft()
-            else:
-                time.sleep(0.05)
-    return Response(stream_with_context(gen()), mimetype="audio/mpeg")
+    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+        abort(404)
+    path = STREAMS[name]["CURRENT_FILE"]
+
+    def generate():
+        while True:  # continuous loop playback
+            with open(path, "rb") as f:
+                chunk = f.read(4096)
+                while chunk:
+                    yield chunk
+                    chunk = f.read(4096)
+    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
@@ -150,8 +164,8 @@ if __name__ == "__main__":
         STREAMS[name] = {
             "IDS": load_playlist_ids(name),
             "INDEX": 0,
-            "QUEUE": deque(),
-            "LAST_REFRESH": time.time(),
+            "CURRENT_FILE": None,
+            "LAST_REFRESH": 0,
         }
         threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
 
