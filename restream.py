@@ -155,13 +155,13 @@ def stream_worker(name):
             url = f"https://www.youtube.com/watch?v={vid}"
             logging.info(f"[{name}] ▶️ {url}")
 
-            # ✅ Flexible, safe command
+            # 🎧 40 kbps mono audio output
             cmd = (
                 f'yt-dlp --no-playlist --no-cache-dir '
-                f'--extract-audio --audio-format mp3 --audio-quality 0 '
-                f'--cookies "{COOKIES_PATH}" '
-                f'-f "bestaudio/best" "{url}" -o - '
-                f'--quiet --no-warnings'
+                f'-f "bestaudio/best" --cookies "{COOKIES_PATH}" -o - '
+                f'--quiet --no-warnings | '
+                f'ffmpeg -loglevel quiet -i pipe:0 '
+                f'-ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
             )
 
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -180,6 +180,7 @@ def stream_worker(name):
             proc.stdout.close()
             proc.stderr.close()
             proc.wait()
+
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
