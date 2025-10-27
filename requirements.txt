@@ -1,3 +1,5 @@
-Flask
+flask
+requests
+brotli
+beautifulsoup4
 yt-dlp
-gunicorn
