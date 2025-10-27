@@ -198,7 +198,9 @@ PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,ini
 <audio controls autoplay style="width:90%;margin-top:20px">
 <source src="/stream/{{name}}" type="audio/mpeg"></audio>
 <p>Now playing cached MP3 (updates hourly)</p>
-<a href="/radio">⬅ Back</a></body></html>"""
+<a href="/download/{{name}}" style="color:#0f0;border:1px solid #0f0;padding:10px;border-radius:8px;display:inline-block;margin:10px;">⬇ Download MP3</a>
+<a href="/radio" style="color:#0f0;border:1px solid #0f0;padding:10px;border-radius:8px;display:inline-block;">⬅ Back</a>
+</body></html>"""
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -287,6 +289,24 @@ def stream_audio(name):
                     yield chunk
                     chunk = f.read(4096)
     return Response(stream_with_context(generate()), mimetype="audio/mpeg")
+
+
+@app.route("/download/<name>")
+def download_audio(name):
+    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+        abort(404)
+    path = STREAMS[name]["CURRENT_FILE"]
+    if not os.path.exists(path):
+        abort(404)
+    logging.info(f"⬇️ Download requested for {name}")
+    return Response(
+        open(path, "rb"),
+        mimetype="audio/mpeg",
+        headers={
+            "Content-Disposition": f"attachment; filename={name}.mp3"
+        }
+    )
+
 
 # ==============================================================
 # 🚀 START SERVER
