@@ -14,8 +14,7 @@ REFRESH_INTERVAL = 1800  # 30 min
 
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-    "malayalam": "https://youtube.com/playlist?list=PLYKzjRvMAychqR_ysgXiHAywPUsVw0AzE",
-    "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+    
 }
 
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -229,4 +228,4 @@ if __name__ == "__main__":
 
     logging.info("🚀 YouTube Radio started successfully!")
     logging.info(f"🌐 Open http://0.0.0.0:5000 to access the UI.")
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8000)
