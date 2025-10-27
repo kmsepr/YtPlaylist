@@ -1,182 +1,220 @@
-import os, time, json, threading, subprocess, logging
-from collections import deque
-from flask import Flask, Response, render_template_string, abort, stream_with_context
-from logging.handlers import RotatingFileHandler
+import os
+import time
+import json
+import logging
+import threading
+from flask import Flask, Response, render_template_string, request
+import yt_dlp
 
-# ---------------- CONFIG ----------------
-LOG_PATH = "/mnt/data/radio.log"
-COOKIES_PATH = "/mnt/data/cookies.txt"
-CACHE_FILE = "/mnt/data/playlist_cache.json"
-DOWNLOAD_DIR = "/mnt/data/radio_cache"
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), handler]
-)
-
+# -----------------------
+# CONFIG
+# -----------------------
 app = Flask(__name__)
 
-PLAYLISTS = {
-    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-}
+CACHE_DIR = "/mnt/data/radio_cache"
+CACHE_FILE = os.path.join(CACHE_DIR, "cache.json")
 
-STREAMS = {}
-REFRESH_INTERVAL = 1800  # 30 min
-DOWNLOAD_INTERVAL = 3600  # 1 hour
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-# ---------------- HTML ----------------
-HOME_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
-<title>YouTube Radio</title><style>
-body{background:#000;color:#0f0;text-align:center;font-family:sans-serif}
-a{color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:10px;display:block;border-radius:8px}
-</style></head><body>
-<h2>🎧 YouTube Radio</h2>
-{% for n in playlists %}
-<a href="/listen/{{n}}">▶️ {{n|capitalize}}</a>
-{% endfor %}
-</body></html>"""
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
-<title>{{name|capitalize}}</title></head>
-<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif">
-<h3>🎶 {{name|capitalize}} Radio</h3>
-<audio controls autoplay style="width:90%;margin-top:20px">
-  <source src="/stream/{{name}}" type="audio/mpeg">
-</audio>
-<p>Now playing cached MP3 (updates hourly)</p>
-</body></html>"""
+YOUTUBE_PLAYLIST = "https://www.youtube.com/playlist?list=PLt7epkU1Cq1sQBuJqJr8bTJKFoD2DhU-f"  # example
+CACHE = {}
+QUEUE = []
+CURRENT = None
+NEXT = None
 
-# ---------------- CACHE ----------------
+
+# -----------------------
+# UTILITIES
+# -----------------------
+
 def load_cache():
+    global CACHE
     if os.path.exists(CACHE_FILE):
         try:
-            return json.load(open(CACHE_FILE))
+            CACHE = json.load(open(CACHE_FILE))
         except Exception:
-            return {}
-    return {}
+            CACHE = {}
+    else:
+        CACHE = {}
 
-def save_cache(data):
+
+def save_cache():
+    with open(CACHE_FILE, "w") as f:
+        json.dump(CACHE, f)
+
+
+def refresh_playlist():
+    """Fetch YouTube playlist URLs."""
+    global QUEUE
+    logging.info("[kas_ranker] Refreshing playlist...")
+    ydl_opts = {"quiet": True, "extract_flat": True, "skip_download": True}
     try:
-        json.dump(data, open(CACHE_FILE, "w"))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(YOUTUBE_PLAYLIST, download=False)
+            entries = info.get("entries", [])
+            QUEUE = ["https://www.youtube.com/watch?v=" + e["url"] for e in entries if e.get("url")]
+        logging.info(f"[kas_ranker] Cached {len(QUEUE)} videos (latest first).")
     except Exception as e:
-        logging.error(e)
+        logging.error(f"Failed to refresh playlist: {e}")
 
-CACHE = load_cache()
 
-# ---------------- PLAYLIST LOADER ----------------
-def load_playlist_ids(name, force=False):
-    now = time.time()
-    cached = CACHE.get(name, {})
-    if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
-        return cached["ids"]
-    url = PLAYLISTS[name]
+def download_track(url, filename="kas_ranker.m4a"):
+    """Download one YouTube track and cache path."""
+    logging.info(f"[kas_ranker] ⬇️ Downloading: {url}")
     try:
-        logging.info(f"[{name}] Refreshing playlist...")
-        res = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            capture_output=True, text=True, check=True)
-        data = json.loads(res.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e]
-        ids.reverse()  # latest first
-        CACHE[name] = {"ids": ids, "time": now}
-        save_cache(CACHE)
-        logging.info(f"[{name}] Cached {len(ids)} videos (latest first).")
-        return ids
+        output_path = os.path.join(CACHE_DIR, filename)
+        ydl_opts = {
+            "format": "140",
+            "outtmpl": output_path,
+            "quiet": True,
+        }
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        CACHE["kas_ranker"] = {
+            "path": output_path,
+            "timestamp": time.time(),
+            "url": url,
+        }
+        save_cache()
+        logging.info("[kas_ranker] ✅ Download complete and cached.")
+        return output_path
     except Exception as e:
-        logging.error(f"[{name}] Playlist error: {e}")
-        return cached.get("ids", [])
+        logging.error(f"[kas_ranker] Download failed: {e}")
+        return None
 
-# ---------------- STREAM WORKER ----------------
-def stream_worker(name):
-    stream = STREAMS[name]
-    while True:
-        try:
-            ids = stream["IDS"]
-            if not ids:
-                ids = load_playlist_ids(name, True)
-                stream["IDS"] = ids
-            if not ids:
-                logging.warning(f"[{name}] No videos found, retrying...")
-                time.sleep(60)
-                continue
 
-            vid = ids[stream["INDEX"] % len(ids)]
-            stream["INDEX"] += 1
-            url = f"https://www.youtube.com/watch?v={vid}"
-            outfile = os.path.join(DOWNLOAD_DIR, f"{name}.mp3")
+def predownload_next():
+    """Start pre-downloading next track while current is playing."""
+    global NEXT
+    if QUEUE:
+        NEXT = QUEUE.pop(0)
+        logging.info(f"[kas_ranker] Pre-downloading next: {NEXT}")
+        download_track(NEXT, filename="next_track.m4a")
+    else:
+        logging.info("[kas_ranker] No next track available yet.")
 
-            logging.info(f"[{name}] ⬇️ Downloading new track: {url}")
-            cmd = [
-                "yt-dlp", "-f", "bestaudio/best", "--cookies", COOKIES_PATH,
-                "--extract-audio", "--audio-format", "mp3",
-                "-o", outfile, url
-            ]
-            subprocess.run(cmd, check=True)
-            logging.info(f"[{name}] ✅ Track downloaded to {outfile}")
 
-            stream["CURRENT_FILE"] = outfile
-            stream["LAST_REFRESH"] = time.time()
+# -----------------------
+# STREAMING
+# -----------------------
 
-            # Serve this one for 1 hour
-            for _ in range(int(DOWNLOAD_INTERVAL / 10)):
-                time.sleep(10)
-                # Refresh playlist occasionally
-                if time.time() - CACHE.get(name, {}).get("time", 0) > REFRESH_INTERVAL:
-                    load_playlist_ids(name, True)
-
-        except Exception as e:
-            logging.error(f"[{name}] Worker error: {e}")
-            time.sleep(30)
-
-# ---------------- ROUTES ----------------
 @app.route("/")
-def home():
-    return render_template_string(HOME_HTML, playlists=PLAYLISTS.keys())
+def index():
+    current_url = CACHE.get("kas_ranker", {}).get("url", "None")
+    return render_template_string("""
+    <html>
+    <head>
+        <title>🎧 YouTube Radio</title>
+        <style>
+            body { background: #000; color: #0f0; font-family: monospace; text-align: center; }
+            a, button { color: #0f0; text-decoration: none; border: none; background: none; cursor: pointer; }
+        </style>
+    </head>
+    <body>
+        <h2>🎶 YouTube Radio - kas_ranker</h2>
+        <audio controls autoplay onended="location.href='/next'">
+            <source src="/stream/kas_ranker" type="audio/mpeg">
+        </audio>
+        <p>Now playing: {{ current }}</p>
+    </body>
+    </html>
+    """, current=current_url)
 
-@app.route("/listen/<name>")
-def listen(name):
-    if name not in PLAYLISTS:
-        abort(404)
-    return render_template_string(PLAYER_HTML, name=name)
 
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS:
-        abort(404)
-    stream = STREAMS[name]
-    path = stream.get("CURRENT_FILE")
+@app.route("/stream/<station>")
+def stream(station):
+    cache_entry = CACHE.get(station)
+    if not cache_entry or "path" not in cache_entry:
+        return "Stream not ready yet, please wait a few seconds...", 503
 
+    path = cache_entry.get("path")
     if not path or not os.path.exists(path):
-        # File not ready yet
-        return Response(
-            b"Stream is preparing... please wait 1–2 minutes while the track downloads.",
-            mimetype="text/plain"
-        )
+        return "Cached audio file not found", 404
 
     def generate():
-        while True:  # continuous loop playback
-            with open(path, "rb") as f:
+        with open(path, "rb") as f:
+            chunk = f.read(4096)
+            while chunk:
+                yield chunk
                 chunk = f.read(4096)
-                while chunk:
-                    yield chunk
-                    chunk = f.read(4096)
-    return Response(stream_with_context(generate()), mimetype="audio/mpeg")
 
-# ---------------- MAIN ----------------
+    # Begin downloading next track while streaming current
+    threading.Thread(target=predownload_next, daemon=True).start()
+
+    response = Response(generate(), mimetype="audio/mpeg")
+    response.headers["Cache-Control"] = "public, max-age=3600"  # valid 1 hour
+    return response
+
+
+@app.route("/next")
+def play_next():
+    """Switch to next track after current ends."""
+    global NEXT
+    if not NEXT:
+        return "No next track ready.", 503
+
+    next_path = os.path.join(CACHE_DIR, "next_track.m4a")
+    if not os.path.exists(next_path):
+        return "Next track not downloaded yet.", 503
+
+    # Replace current with next
+    CACHE["kas_ranker"] = {
+        "path": next_path,
+        "timestamp": time.time(),
+        "url": NEXT,
+    }
+    save_cache()
+    NEXT = None
+
+    # Start pre-downloading the next after switching
+    threading.Thread(target=predownload_next, daemon=True).start()
+
+    return render_template_string("""
+    <html>
+    <head><meta http-equiv="refresh" content="1;url=/" /></head>
+    <body style="background:#000;color:#0f0;text-align:center;">
+        <p>⏭️ Loading next track...</p>
+    </body>
+    </html>
+    """)
+
+
+# -----------------------
+# BACKGROUND THREADS
+# -----------------------
+
+def background_worker():
+    """Periodic playlist refresh."""
+    while True:
+        try:
+            refresh_playlist()
+            time.sleep(3600)
+        except Exception as e:
+            logging.error(f"Error refreshing playlist: {e}")
+            time.sleep(600)
+
+
+# -----------------------
+# MAIN ENTRY
+# -----------------------
+
 if __name__ == "__main__":
-    for name in PLAYLISTS:
-        STREAMS[name] = {
-            "IDS": load_playlist_ids(name),
-            "INDEX": 0,
-            "CURRENT_FILE": None,
-            "LAST_REFRESH": 0,
-        }
-        threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
+    load_cache()
+    refresh_playlist()
+
+    # Download first track if not already cached
+    if not CACHE.get("kas_ranker"):
+        if QUEUE:
+            first = QUEUE.pop(0)
+            download_track(first)
+            threading.Thread(target=predownload_next, daemon=True).start()
+
+    threading.Thread(target=background_worker, daemon=True).start()
 
     logging.info("🚀 YouTube Radio started successfully!")
     logging.info("🌐 Open http://0.0.0.0:8000 to access the UI.")
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8000, debug=False)
