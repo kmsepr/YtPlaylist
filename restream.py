@@ -2,6 +2,7 @@ import os, time, json, threading, subprocess, logging, requests
 from flask import Flask, Response, render_template_string, abort, stream_with_context
 from logging.handlers import RotatingFileHandler
 from collections import deque
+from flask import send_file, stream_with_context, Response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
@@ -282,11 +283,25 @@ def stream_worker_radio(name):
 def radio_home():
     return render_template_string(RADIO_HOME_HTML, playlists=PLAYLISTS.keys())
 
+
 @app.route("/listen/<name>")
-def listen_radio(name):
-    if name not in PLAYLISTS:
+def listen_radio_download(name):
+    if name not in STREAMS_RADIO:
         abort(404)
-    return render_template_string(PLAYER_HTML, name=name)
+    s = STREAMS_RADIO[name]
+
+    def gen():
+        while True:
+            if s["QUEUE"]:
+                yield s["QUEUE"].popleft()
+            else:
+                time.sleep(0.05)
+
+    # Use attachment header to trigger download
+    headers = {
+        "Content-Disposition": f"attachment; filename={name}.mp3"
+    }
+    return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
 @app.route("/stream/<name>")
 def stream_audio(name):
