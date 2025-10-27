@@ -152,5 +152,5 @@ if __name__ == "__main__":
         threading.Thread(target=stream_worker, args=(name,), daemon=True).start()
 
     logging.info("🚀 YouTube Radio started successfully!")
-    logging.info("🌐 Open http://0.0.0.0:5000 to access the UI.")
+    logging.info("🌐 Open http://0.0.0.0:8000 to access the UI.")
     app.run(host="0.0.0.0", port=8000)
