@@ -145,9 +145,17 @@ def listen(name):
 
 @app.route("/stream/<name>")
 def stream_audio(name):
-    if name not in STREAMS or "CURRENT_FILE" not in STREAMS[name]:
+    if name not in STREAMS:
         abort(404)
-    path = STREAMS[name]["CURRENT_FILE"]
+    stream = STREAMS[name]
+    path = stream.get("CURRENT_FILE")
+
+    if not path or not os.path.exists(path):
+        # File not ready yet
+        return Response(
+            b"Stream is preparing... please wait 1–2 minutes while the track downloads.",
+            mimetype="text/plain"
+        )
 
     def generate():
         while True:  # continuous loop playback
