@@ -92,7 +92,7 @@ def stream_worker(name):
                 ids = load_playlist_ids(name, True)
                 stream["IDS"] = ids
             if not ids:
-                logging.warning(f"[{name}] No videos, retrying...")
+                logging.warning(f"[{name}] No videos found, retrying...")
                 time.sleep(10)
                 continue
 
@@ -102,8 +102,11 @@ def stream_worker(name):
             logging.info(f"[{name}] ▶️ {url}")
 
             cmd = (
-                f'yt-dlp -f "bestaudio" --cookies "{COOKIES_PATH}" -o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
+                f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
+                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
+                f'-o - --quiet --no-warnings "{url}" | '
+                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k '
+                f'-f mp3 -content_type audio/mpeg pipe:1'
             )
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             while True:
