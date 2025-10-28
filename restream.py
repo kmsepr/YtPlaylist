@@ -182,6 +182,9 @@ PLAYLISTS = {
 
 "studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
 
+
+"hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+
 }
 
 STREAMS_RADIO = {}
