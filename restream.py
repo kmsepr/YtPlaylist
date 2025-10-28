@@ -43,7 +43,7 @@ YOUTUBE_STREAMS = {
     "entri_ias": "https://www.youtube.com/@EntriIAS/live",
     "studyiq_english": "https://www.youtube.com/@studyiqiasenglish/live",
     "voice_rahmani": "https://www.youtube.com/@voiceofrahmaniyya5828/live",
-    "kas_ranker": "https://www.youtube.com/@freepscclasses/live",
+    "kas_ranker": "https://youtube.com/@kasrankerofficial/live",
     "suprabhatam": "https://www.youtube.com/@suprabhaatham_online/live",
 }
 
@@ -150,7 +150,7 @@ def audio_only(channel):
         return f"Channel '{channel}' not ready or offline", 503
     logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
     def generate():
-        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "40k", "-f", "mp3", "pipe:1"]
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
