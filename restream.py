@@ -180,6 +180,8 @@ PLAYLISTS = {
 
 "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
 
+"studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
+
 }
 
 STREAMS_RADIO = {}
