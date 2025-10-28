@@ -150,7 +150,7 @@ def audio_only(channel):
         return f"Channel '{channel}' not ready or offline", 503
     logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
     def generate():
-        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "40k", "-f", "mp3", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while True:
