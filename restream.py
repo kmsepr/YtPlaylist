@@ -6,7 +6,7 @@ import subprocess
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import deque
-from flask import Flask, Response, abort, stream_with_context
+from flask import Flask, Response, abort, stream_with_context, render_template_string
 import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -107,7 +107,7 @@ def stream_worker_radio(name):
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
-                # block until queue space available
+                # Block until queue space available
                 while len(s["QUEUE"]) >= MAX_QUEUE:
                     time.sleep(0.05)
                 s["QUEUE"].append(chunk)
@@ -121,7 +121,28 @@ def stream_worker_radio(name):
             time.sleep(5)
 
 # ==============================================================
-# 🎧 /listen endpoint only
+# 🏠 Home page
+# ==============================================================
+
+@app.route("/")
+def home():
+    html = """<!doctype html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🎧 YouTube Radio</title>
+<style>
+body{background:#000;color:#0f0;font-family:Arial,Helvetica,sans-serif;text-align:center;margin:0;padding:12px}
+a{display:block;color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:8px;border-radius:8px;font-size:18px}
+a:hover{background:#0f0;color:#000}
+</style></head><body>
+<h2>🎶 YouTube Playlist Radio</h2>
+{% for p in playlists %}
+  <a href="/listen/{{p}}">▶ {{p|capitalize}}</a>
+{% endfor %}
+</body></html>"""
+    return render_template_string(html, playlists=PLAYLISTS.keys())
+
+# ==============================================================
+# 🎧 /listen endpoint
 # ==============================================================
 
 @app.route("/listen/<name>")
@@ -140,7 +161,7 @@ def listen_radio(name):
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
 # ==============================================================
-# 🛠️ Keep-alive thread (prevents autosleep)
+# 🛠️ Keep-alive thread
 # ==============================================================
 
 def keep_alive():
