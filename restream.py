@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 app = Flask(__name__)
 
 # ==============================================================
-# 📺 TV + YouTube Live SECTION (original)
+# 📺 TV + YouTube Live SECTION
 # ==============================================================
 
 TV_STREAMS = {
@@ -93,10 +93,9 @@ threading.Thread(target=refresh_stream_urls, daemon=True).start()
 @app.route("/")
 def home():
     tv_channels = list(TV_STREAMS.keys())
-    youtube_live = [n for n, live in LIVE_STATUS.items() if live]
     html = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>📺 Live TV & YouTube</title>
+<title>📺 Live TV & Playlist Radio</title>
 <style>
 body{background:#000;color:#fff;font-family:sans-serif;text-align:center;margin:0}
 h1{color:#0ff;margin:15px 0}
@@ -116,18 +115,10 @@ a:hover{color:#ff0}
 <a href="/watch/{{ c }}">▶ Watch</a>
 <a href="/audio/{{ c }}">🎵 Audio</a>
 </div>{% endfor %}</div>
-<h2>YouTube Live</h2>
-<div class="grid">
-{% for c in youtube_channels %}
-<div class="card">
-<img src="{{ logos.get(c) }}"><b>{{ c.replace('_',' ').title() }}</b><br>
-<a href="/watch/{{ c }}">▶ Watch</a>
-<a href="/audio/{{ c }}">🎵 Audio</a>
-</div>{% endfor %}</div>
-<h2>🎧 YouTube Radio</h2>
+<h2>🎧 YouTube Playlist Radio</h2>
 <a href="/radio" style="color:#0ff;border:1px solid #0ff;padding:10px;border-radius:8px;display:inline-block">🎶 Open Radio</a>
 </body></html>"""
-    return render_template_string(html, tv_channels=tv_channels, youtube_channels=youtube_live, logos=CHANNEL_LOGOS)
+    return render_template_string(html, tv_channels=tv_channels, logos=CHANNEL_LOGOS)
 
 @app.route("/watch/<channel>")
 def watch(channel):
@@ -163,7 +154,7 @@ def audio_only(channel):
     return Response(generate(), mimetype="audio/mpeg")
 
 # ==============================================================
-# 🎶 YouTube Radio SECTION (queue-based)
+# 🎶 YouTube Radio SECTION (Playlist-based)
 # ==============================================================
 
 LOG_PATH = "/mnt/data/radio.log"
@@ -177,16 +168,10 @@ logging.getLogger().addHandler(handler)
 
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-
-"ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
-
-"studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
-
-
-"hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
-
-"samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
-
+    "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
+    "studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
+    "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+    "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
 }
 
 STREAMS_RADIO = {}
@@ -288,11 +273,9 @@ def stream_worker_radio(name):
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
 
-# ---------------- ROUTES ----------------
 @app.route("/radio")
 def radio_home():
     return render_template_string(RADIO_HOME_HTML, playlists=PLAYLISTS.keys())
-
 
 @app.route("/listen/<name>")
 def listen_radio_download(name):
@@ -306,11 +289,7 @@ def listen_radio_download(name):
                 yield s["QUEUE"].popleft()
             else:
                 time.sleep(0.05)
-
-    # Use attachment header to trigger download
-    headers = {
-        "Content-Disposition": f"attachment; filename={name}.mp3"
-    }
+    headers = {"Content-Disposition": f"attachment; filename={name}.mp3"}
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
 @app.route("/stream/<name>")
@@ -318,14 +297,12 @@ def stream_audio(name):
     if name not in STREAMS_RADIO:
         abort(404)
     s = STREAMS_RADIO[name]
-
     def gen():
         while True:
             if s["QUEUE"]:
                 yield s["QUEUE"].popleft()
             else:
                 time.sleep(0.05)
-
     return Response(stream_with_context(gen()), mimetype="audio/mpeg")
 
 # ==============================================================
@@ -333,7 +310,6 @@ def stream_audio(name):
 # ==============================================================
 
 if __name__ == "__main__":
-    # Initialize radio streams
     for pname in PLAYLISTS:
         STREAMS_RADIO[pname] = {
             "IDS": load_playlist_ids_radio(pname),
@@ -343,5 +319,5 @@ if __name__ == "__main__":
         }
         threading.Thread(target=stream_worker_radio, args=(pname,), daemon=True).start()
 
-    logging.info("🚀 Live TV + YouTube + Radio server running at http://0.0.0.0:8000")
+    logging.info("🚀 Live TV + Playlist Radio server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
