@@ -6,8 +6,7 @@ import subprocess
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import deque
-from flask import Flask, Response, abort, stream_with_context, render_template_string
-import requests
+from flask import Flask, Response, render_template_string, abort, stream_with_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
@@ -98,7 +97,7 @@ def stream_worker_radio(name):
                 f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
                 f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
                 f'-o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 48k -f mp3 pipe:1'
+                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
             )
 
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -107,25 +106,22 @@ def stream_worker_radio(name):
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
-                # Block until queue space available
+                # 🟢 Instead of skipping when queue is full, block until space
                 while len(s["QUEUE"]) >= MAX_QUEUE:
                     time.sleep(0.05)
                 s["QUEUE"].append(chunk)
 
             proc.wait()
             logging.info(f"[{name}] ✅ Track completed.")
-            time.sleep(2)
+            time.sleep(2)  # small delay before next video
 
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
 
-# ==============================================================
-# 🏠 Home page
-# ==============================================================
-
 @app.route("/")
 def home():
+    playlists = list(PLAYLISTS.keys())
     html = """<!doctype html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🎧 YouTube Radio</title>
@@ -139,14 +135,10 @@ a:hover{background:#0f0;color:#000}
   <a href="/listen/{{p}}">▶ {{p|capitalize}}</a>
 {% endfor %}
 </body></html>"""
-    return render_template_string(html, playlists=PLAYLISTS.keys())
-
-# ==============================================================
-# 🎧 /listen endpoint
-# ==============================================================
+    return render_template_string(html, playlists=playlists)
 
 @app.route("/listen/<name>")
-def listen_radio(name):
+def listen_radio_download(name):
     if name not in STREAMS_RADIO:
         abort(404)
     s = STREAMS_RADIO[name]
@@ -157,20 +149,21 @@ def listen_radio(name):
                 yield s["QUEUE"].popleft()
             else:
                 time.sleep(0.05)
-    headers = {"Content-Disposition": f"inline; filename={name}.mp3"}
+    headers = {"Content-Disposition": f"attachment; filename={name}.mp3"}
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
-# ==============================================================
-# 🛠️ Keep-alive thread
-# ==============================================================
-
-def keep_alive():
-    while True:
-        try:
-            requests.get("http://localhost:8000/listen/ca", timeout=5)
-        except Exception:
-            pass
-        time.sleep(240)  # ping every 4 minutes
+@app.route("/stream/<name>")
+def stream_audio(name):
+    if name not in STREAMS_RADIO:
+        abort(404)
+    s = STREAMS_RADIO[name]
+    def gen():
+        while True:
+            if s["QUEUE"]:
+                yield s["QUEUE"].popleft()
+            else:
+                time.sleep(0.05)
+    return Response(stream_with_context(gen()), mimetype="audio/mpeg")
 
 # ==============================================================
 # 🚀 START SERVER
@@ -186,6 +179,5 @@ if __name__ == "__main__":
         }
         threading.Thread(target=stream_worker_radio, args=(pname,), daemon=True).start()
 
-    threading.Thread(target=keep_alive, daemon=True).start()
     logging.info("🚀 YouTube Playlist Radio server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
