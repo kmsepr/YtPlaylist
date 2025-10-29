@@ -1,8 +1,12 @@
-import os, time, json, threading, subprocess, logging, requests
-from flask import Flask, Response, render_template_string, abort, stream_with_context
+import os
+import time
+import json
+import threading
+import subprocess
+import logging
 from logging.handlers import RotatingFileHandler
 from collections import deque
-from flask import send_file, stream_with_context, Response
+from flask import Flask, Response, render_template_string, abort, stream_with_context
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
@@ -88,70 +92,8 @@ def refresh_stream_urls():
                 LIVE_STATUS[name] = False
         time.sleep(90)
 
+# start YouTube live refresh thread (kept intact)
 threading.Thread(target=refresh_stream_urls, daemon=True).start()
-
-@app.route("/")
-def home():
-    tv_channels = list(TV_STREAMS.keys())
-    html = """<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>📺 Live TV & Playlist Radio</title>
-<style>
-body{background:#000;color:#fff;font-family:sans-serif;text-align:center;margin:0}
-h1{color:#0ff;margin:15px 0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:15px;padding:15px}
-.card{background:#111;border-radius:12px;padding:8px;transition:0.3s}
-.card:hover{transform:scale(1.05);background:#0ff;color:#000}
-.card img{width:100%;height:100px;object-fit:contain;border-radius:10px;background:#000}
-a{color:#0ff;text-decoration:none;margin:4px;display:inline-block}
-a:hover{color:#ff0}
-</style></head><body>
-<h1>📡 Live Channels</h1>
-<h2>TV Channels</h2>
-<div class="grid">
-{% for c in tv_channels %}
-<div class="card">
-<img src="{{ logos.get(c) }}"><b>{{ c.replace('_',' ').title() }}</b><br>
-<a href="/watch/{{ c }}">▶ Watch</a>
-<a href="/audio/{{ c }}">🎵 Audio</a>
-</div>{% endfor %}</div>
-<h2>🎧 YouTube Playlist Radio</h2>
-<a href="/radio" style="color:#0ff;border:1px solid #0ff;padding:10px;border-radius:8px;display:inline-block">🎶 Open Radio</a>
-</body></html>"""
-    return render_template_string(html, tv_channels=tv_channels, logos=CHANNEL_LOGOS)
-
-@app.route("/watch/<channel>")
-def watch(channel):
-    url = TV_STREAMS.get(channel) or CACHE.get(channel)
-    if not url:
-        return "Channel not available", 503
-    return f"""<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
-<script src='https://cdn.jsdelivr.net/npm/hls.js@latest'></script>
-<style>body{{background:#000;color:#fff;text-align:center}}video{{width:95%;max-width:720px}}</style></head>
-<body><h2>{channel.replace('_',' ').title()}</h2>
-<video id='v' controls autoplay playsinline></video>
-<script>if(Hls.isSupported()){{let h=new Hls();h.loadSource("{url}");h.attachMedia(document.getElementById('v'));}}
-else{{document.getElementById('v').src="{url}";}}</script>
-<a href='/'>⬅ Home</a></body></html>"""
-
-@app.route("/audio/<channel>")
-def audio_only(channel):
-    url = TV_STREAMS.get(channel) or CACHE.get(channel)
-    if not url:
-        return f"Channel '{channel}' not ready or offline", 503
-    logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
-    def generate():
-        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        try:
-            while True:
-                chunk = proc.stdout.read(1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            proc.terminate()
-    return Response(generate(), mimetype="audio/mpeg")
 
 # ==============================================================
 # 🎶 YouTube Radio SECTION (Playlist-based)
@@ -180,21 +122,25 @@ REFRESH_INTERVAL = 1800  # 30 min
 
 RADIO_HOME_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
 <title>YouTube Radio</title><style>
-body{background:#000;color:#0f0;text-align:center;font-family:sans-serif}
+body{background:#000;color:#0f0;text-align:center;font-family:Arial,Helvetica,sans-serif;margin:0;padding:12px}
 a{color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:10px;display:block;border-radius:8px}
 </style></head><body>
-<h2>🎧 YouTube Radio</h2>
-{% for n in playlists %}<a href="/listen/{{n}}">▶️ {{n|capitalize}}</a>{% endfor %}
-<a href="/">⬅ Back to Live TV</a></body></html>"""
+<h2 style="font-size:18px;margin:6px 0">🎧 YouTube Radio</h2>
+{% for n in playlists %}
+  <a href="/listen/{{n}}" style="font-size:18px;padding:12px 8px">▶️ {{n|capitalize}}</a>
+{% endfor %}
+<a href="/" style="color:#0ff;border:1px solid #0ff;padding:10px;border-radius:8px;display:inline-block;margin-top:6px">⬅ Back</a>
+</body></html>"""
 
 PLAYER_HTML = """<html><head><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{name|capitalize}}</title></head>
-<body style="background:#000;color:#0f0;text-align:center;font-family:sans-serif">
-<h3>🎶 {{name|capitalize}} Radio</h3>
-<audio controls autoplay style="width:90%;margin-top:20px">
+<body style="background:#000;color:#0f0;text-align:center;font-family:Arial,Helvetica,sans-serif">
+<h3 style="font-size:18px;margin-top:12px">🎶 {{name|capitalize}} Radio</h3>
+<audio controls autoplay style="width:90%;margin-top:16px">
 <source src="/stream/{{name}}" type="audio/mpeg"></audio>
-<p>Now streaming low-bitrate MP3 (mono, 40 kbps)</p>
-<a href="/radio">⬅ Back</a></body></html>"""
+<p style="font-size:14px;margin-top:10px">Now streaming low-bitrate MP3 (mono, 40 kbps)</p>
+<a href="/#radio" style="color:#0ff;border:1px solid #0ff;padding:8px;border-radius:8px;display:inline-block;margin-top:8px">⬅ Back</a>
+</body></html>"""
 
 def load_cache_radio():
     if os.path.exists(CACHE_FILE):
@@ -306,10 +252,164 @@ def stream_audio(name):
     return Response(stream_with_context(gen()), mimetype="audio/mpeg")
 
 # ==============================================================
+# Home (single route) with two tabs (TV + Radio) — keypad friendly
+# ==============================================================
+
+HOME_HTML = """<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📺 TV & 🎵 Radio</title>
+<style>
+:root{
+  --bg:#000;
+  --card:#0b0b0b;
+  --accent:#00ffff;
+  --accent-2:#87cefa;
+  --text:#ffffff;
+  --muted:#9ae6ff;
+}
+html,body{background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif;margin:0;padding:8px}
+.topbar{display:flex;gap:6px;justify-content:space-between;align-items:center;margin-bottom:8px}
+.tabbtn{flex:1;padding:10px 6px;border-radius:8px;border:2px solid var(--accent);background:transparent;color:var(--accent);font-size:16px;text-align:center;font-weight:bold}
+.tabbtn.inactive{border-color:#222;color:#666}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.card{background:var(--card);padding:8px;border-radius:10px;text-align:center;min-height:110px;box-shadow:0 0 6px rgba(0,0,0,0.6)}
+.card img{width:100%;height:56px;object-fit:contain;border-radius:8px;background:#000;padding:4px}
+.chn{font-size:14px;margin-top:6px;font-weight:bold;color:var(--muted)}
+.links{margin-top:8px;display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap}
+.play-link, .audio-link{
+  display:inline-block;padding:8px 10px;border-radius:8px;font-weight:bold;text-decoration:none;
+  font-size:14px;
+}
+.play-link{background:var(--accent);color:#000}
+.audio-link{background:transparent;color:var(--accent-2);border:2px solid var(--accent-2)}
+.play-link:active, .audio-link:active{transform:scale(0.98)}
+.small-note{font-size:12px;color:#9aa}
+.header{font-size:18px;text-align:center;margin-bottom:6px;color:var(--accent)}
+/* make big tappable area for keypad phones */
+@media (max-width:360px){
+  .tabbtn{font-size:15px;padding:12px}
+  .card{min-height:120px}
+  .play-link, .audio-link{padding:10px 12px;font-size:15px}
+  .chn{font-size:15px}
+}
+</style>
+</head>
+<body>
+<div class="topbar" role="tablist">
+  <button id="tabTV" class="tabbtn" onclick="showTab('tv')">📺 TV</button>
+  <button id="tabRadio" class="tabbtn inactive" onclick="showTab('radio')">🎵 Radio</button>
+</div>
+
+<div id="tv" class="tab" style="display:block">
+  <div class="header">📡 Live TV Channels</div>
+  <div class="grid">
+  {% for c in tv_channels %}
+    <div class="card" role="article">
+      <img src="{{ logos.get(c) }}" alt="{{ c }}">
+      <div class="chn">{{ c.replace('_',' ').title() }}</div>
+      <div class="links">
+        <a class="play-link" href="/watch/{{ c }}">▶ Watch</a>
+        <a class="audio-link" href="/audio/{{ c }}">🎵 Audio</a>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  <div style="height:10px"></div>
+  <div style="text-align:center">
+    <a href="#radio" onclick="showTab('radio')" style="color:var(--accent);font-weight:bold">Open Radio ▶</a>
+  </div>
+</div>
+
+<div id="radio" class="tab" style="display:none">
+  <div class="header">🎧 YouTube Playlist Radio</div>
+  <div style="padding:6px">
+    {% for p in playlists %}
+      <a href="/listen/{{p}}" class="play-link" style="display:block;margin-bottom:8px;text-align:center">▶ {{ p|capitalize }}</a>
+    {% endfor %}
+  </div>
+  <div style="text-align:center;margin-top:6px">
+    <a href="#" onclick="showTab('tv')" style="color:var(--accent);font-weight:bold">Back to TV ◀</a>
+  </div>
+</div>
+
+<script>
+function showTab(name){
+  var tv = document.getElementById('tv');
+  var radio = document.getElementById('radio');
+  var tbtn = document.getElementById('tabTV');
+  var rbtn = document.getElementById('tabRadio');
+  if(name==='tv'){
+    tv.style.display='block';
+    radio.style.display='none';
+    tbtn.classList.remove('inactive');
+    rbtn.classList.add('inactive');
+    window.location.hash = ''; // clean hash
+  } else {
+    tv.style.display='none';
+    radio.style.display='block';
+    tbtn.classList.add('inactive');
+    rbtn.classList.remove('inactive');
+    window.location.hash = 'radio';
+  }
+}
+// open tab if hash present
+if(window.location.hash === '#radio') showTab('radio');
+</script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def home():
+    tv_channels = list(TV_STREAMS.keys())
+    playlists = list(PLAYLISTS.keys())
+    return render_template_string(HOME_HTML, tv_channels=tv_channels, playlists=playlists, logos=CHANNEL_LOGOS)
+
+@app.route("/watch/<channel>")
+def watch(channel):
+    url = TV_STREAMS.get(channel) or CACHE.get(channel)
+    if not url:
+        return "Channel not available", 503
+    return f"""<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>
+<script src='https://cdn.jsdelivr.net/npm/hls.js@latest'></script>
+<style>body{{background:#000;color:#fff;text-align:center}}video{{width:95%;max-width:720px}}</style></head>
+<body><h2 style="color:#00ffff">{channel.replace('_',' ').title()}</h2>
+<video id='v' controls autoplay playsinline></video>
+<script>if(Hls.isSupported()){{let h=new Hls();h.loadSource("{url}");h.attachMedia(document.getElementById('v'));}}
+else{{document.getElementById('v').src="{url}";}}</script>
+<div style="margin-top:10px"><a href='/' style="color:#00ffff">⬅ Home</a></div>
+</body></html>"""
+
+@app.route("/audio/<channel>")
+def audio_only(channel):
+    url = TV_STREAMS.get(channel) or CACHE.get(channel)
+    if not url:
+        return f"Channel '{channel}' not ready or offline", 503
+    logging.info(f"🎧 Streaming audio for {channel} ({url[:50]}...)")
+    def generate():
+        cmd = ["ffmpeg", "-i", url, "-vn", "-ac", "1", "-b:a", "48k", "-f", "mp3", "pipe:1"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = proc.stdout.read(1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+    return Response(generate(), mimetype="audio/mpeg")
+
+# ==============================================================
 # 🚀 START SERVER
 # ==============================================================
 
 if __name__ == "__main__":
+    # Initialize radio streams
     for pname in PLAYLISTS:
         STREAMS_RADIO[pname] = {
             "IDS": load_playlist_ids_radio(pname),
