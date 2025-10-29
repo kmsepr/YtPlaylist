@@ -8,12 +8,12 @@ from logging.handlers import RotatingFileHandler
 from collections import deque
 from flask import Flask, Response, render_template_string, abort, stream_with_context
 
-# ==============================================================
-# ⚙️ Setup
-# ==============================================================
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
+
+# ==============================================================
+# 🎶 YouTube Playlist Radio SECTION
+# ==============================================================
 
 LOG_PATH = "/mnt/data/radio.log"
 COOKIES_PATH = "/mnt/data/cookies.txt"
@@ -24,10 +24,6 @@ os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
 logging.getLogger().addHandler(handler)
 
-# ==============================================================
-# 🎶 YouTube Playlists
-# ==============================================================
-
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
     "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
@@ -35,23 +31,6 @@ PLAYLISTS = {
     "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
 }
-
-# ==============================================================
-# 🔁 Playback Modes
-# ==============================================================
-
-# Choose: "normal" → oldest→newest, "reverse" → newest→oldest, "shuffle" → random order
-PLAYLIST_SETTINGS = {
-    "kas_ranker": {"mode": "reverse"},
-    "ca": {"mode": "normal"},
-    "studyiq": {"mode": "reverse"},
-    "hindi": {"mode": "shuffle"},
-    "samastha": {"mode": "normal"},
-}
-
-# ==============================================================
-# 📦 Caching & State
-# ==============================================================
 
 STREAMS_RADIO = {}
 MAX_QUEUE = 128
@@ -73,10 +52,6 @@ def save_cache_radio(data):
 
 CACHE_RADIO = load_cache_radio()
 
-# ==============================================================
-# 🎧 Playlist Loader
-# ==============================================================
-
 def load_playlist_ids_radio(name, force=False):
     now = time.time()
     cached = CACHE_RADIO.get(name, {})
@@ -91,28 +66,14 @@ def load_playlist_ids_radio(name, force=False):
             capture_output=True, text=True, check=True
         )
         data = json.loads(res.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e]
-
-        # 🌀 Apply playback mode
-        mode = PLAYLIST_SETTINGS.get(name, {}).get("mode", "normal")
-        if mode == "reverse":
-            ids = ids[::-1]
-        elif mode == "shuffle":
-            import random
-            random.shuffle(ids)
-
+        ids = [e["id"] for e in data.get("entries", []) if "id" in e][::-1]
         CACHE_RADIO[name] = {"ids": ids, "time": now}
         save_cache_radio(CACHE_RADIO)
-        logging.info(f"[{name}] Cached {len(ids)} videos ({mode} mode).")
+        logging.info(f"[{name}] Cached {len(ids)} videos.")
         return ids
-
     except Exception as e:
         logging.error(f"[{name}] Playlist error: {e}")
         return cached.get("ids", [])
-
-# ==============================================================
-# 🧠 Streaming Worker
-# ==============================================================
 
 def stream_worker_radio(name):
     s = STREAMS_RADIO[name]
@@ -126,7 +87,6 @@ def stream_worker_radio(name):
                 logging.warning(f"[{name}] No playlist ids found; sleeping...")
                 time.sleep(10)
                 continue
-
             vid = ids[s["INDEX"] % len(ids)]
             s["INDEX"] += 1
             url = f"https://www.youtube.com/watch?v={vid}"
@@ -138,29 +98,20 @@ def stream_worker_radio(name):
                 f'-o - --quiet --no-warnings "{url}" | '
                 f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
             )
-
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
             while True:
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
-                # 🟢 Prevent skipping by blocking until buffer frees
-                while len(s["QUEUE"]) >= MAX_QUEUE:
-                    time.sleep(0.05)
-                s["QUEUE"].append(chunk)
+                if len(s["QUEUE"]) < MAX_QUEUE:
+                    s["QUEUE"].append(chunk)
 
+            proc.stdout.close()
             proc.wait()
-            logging.info(f"[{name}] ✅ Track completed.")
-            time.sleep(2)
-
+            logging.info(f"[{name}] ✅ Finished one track.")
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
-
-# ==============================================================
-# 🌐 Flask Routes
-# ==============================================================
 
 @app.route("/")
 def home():
@@ -172,20 +123,20 @@ def home():
 body{background:#000;color:#0f0;font-family:Arial,Helvetica,sans-serif;text-align:center;margin:0;padding:12px}
 a{display:block;color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:8px;border-radius:8px;font-size:18px}
 a:hover{background:#0f0;color:#000}
-small{color:#888}
 </style></head><body>
 <h2>🎶 YouTube Playlist Radio</h2>
 {% for p in playlists %}
-  <a href="/listen/{{p}}">▶ {{p|capitalize}} <small>({{settings[p].mode}})</small></a>
+  <a href="/listen/{{p}}">▶ {{p|capitalize}}</a>
 {% endfor %}
 </body></html>"""
-    return render_template_string(html, playlists=playlists, settings=PLAYLIST_SETTINGS)
+    return render_template_string(html, playlists=playlists)
 
 @app.route("/listen/<name>")
 def listen_radio_download(name):
     if name not in STREAMS_RADIO:
         abort(404)
     s = STREAMS_RADIO[name]
+
     def gen():
         while True:
             if s["QUEUE"]:
