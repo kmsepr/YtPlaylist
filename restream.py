@@ -8,14 +8,13 @@ from logging.handlers import RotatingFileHandler
 from collections import deque
 from flask import Flask, Response, abort, stream_with_context
 import requests
-import random
-
-# ==============================================================
-# ⚙️ Setup
-# ==============================================================
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
+
+# ==============================================================
+# 🎶 YouTube Playlist Radio SECTION
+# ==============================================================
 
 LOG_PATH = "/mnt/data/radio.log"
 COOKIES_PATH = "/mnt/data/cookies.txt"
@@ -26,10 +25,6 @@ os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
 logging.getLogger().addHandler(handler)
 
-# ==============================================================
-# 🎶 YouTube Playlists
-# ==============================================================
-
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
     "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
@@ -38,21 +33,9 @@ PLAYLISTS = {
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
 }
 
-PLAYLIST_SETTINGS = {
-    "kas_ranker": {"mode": "reverse"},
-    "ca": {"mode": "normal"},
-    "studyiq": {"mode": "reverse"},
-    "hindi": {"mode": "shuffle"},
-    "samastha": {"mode": "normal"},
-}
-
-# ==============================================================
-# 📦 Caching & State
-# ==============================================================
-
 STREAMS_RADIO = {}
 MAX_QUEUE = 128
-REFRESH_INTERVAL = 1800  # 30 minutes
+REFRESH_INTERVAL = 1800  # 30 min
 
 def load_cache_radio():
     if os.path.exists(CACHE_FILE):
@@ -70,10 +53,6 @@ def save_cache_radio(data):
 
 CACHE_RADIO = load_cache_radio()
 
-# ==============================================================
-# 🎧 Playlist Loader
-# ==============================================================
-
 def load_playlist_ids_radio(name, force=False):
     now = time.time()
     cached = CACHE_RADIO.get(name, {})
@@ -88,26 +67,14 @@ def load_playlist_ids_radio(name, force=False):
             capture_output=True, text=True, check=True
         )
         data = json.loads(res.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e]
-
-        mode = PLAYLIST_SETTINGS.get(name, {}).get("mode", "normal")
-        if mode == "reverse":
-            ids = ids[::-1]
-        elif mode == "shuffle":
-            random.shuffle(ids)
-
+        ids = [e["id"] for e in data.get("entries", []) if "id" in e][::-1]
         CACHE_RADIO[name] = {"ids": ids, "time": now}
         save_cache_radio(CACHE_RADIO)
-        logging.info(f"[{name}] Cached {len(ids)} videos ({mode} mode).")
+        logging.info(f"[{name}] Cached {len(ids)} videos.")
         return ids
-
     except Exception as e:
         logging.error(f"[{name}] Playlist error: {e}")
         return cached.get("ids", [])
-
-# ==============================================================
-# 🧠 Streaming Worker
-# ==============================================================
 
 def stream_worker_radio(name):
     s = STREAMS_RADIO[name]
@@ -128,10 +95,10 @@ def stream_worker_radio(name):
             logging.info(f"[{name}] ▶️ {url}")
 
             cmd = (
-                f'yt-dlp -f "bestaudio[ext=m4a]/bestaudio/best" --cookies "{COOKIES_PATH}" '
+                f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
                 f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
                 f'-o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 64k -f mp3 pipe:1'
+                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 48k -f mp3 pipe:1'
             )
 
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -140,6 +107,7 @@ def stream_worker_radio(name):
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
+                # block until queue space available
                 while len(s["QUEUE"]) >= MAX_QUEUE:
                     time.sleep(0.05)
                 s["QUEUE"].append(chunk)
@@ -153,7 +121,7 @@ def stream_worker_radio(name):
             time.sleep(5)
 
 # ==============================================================
-# 🌐 Flask Routes
+# 🎧 /listen endpoint only
 # ==============================================================
 
 @app.route("/listen/<name>")
@@ -168,75 +136,20 @@ def listen_radio(name):
                 yield s["QUEUE"].popleft()
             else:
                 time.sleep(0.05)
-
     headers = {"Content-Disposition": f"inline; filename={name}.mp3"}
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
 # ==============================================================
-# 💤 Keep-Alive (Prevents Autosleep)
+# 🛠️ Keep-alive thread (prevents autosleep)
 # ==============================================================
 
 def keep_alive():
     while True:
         try:
             requests.get("http://localhost:8000/listen/ca", timeout=5)
-        except:
+        except Exception:
             pass
-        time.sleep(240)  # Ping every 4 minutes
-
-@app.route("/")
-def home():
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>YouTube Radio 🎧</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                background: linear-gradient(135deg, #4facfe, #00f2fe);
-                color: #fff;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100vh;
-                margin: 0;
-            }
-            h1 {
-                font-size: 2.5em;
-                margin-bottom: 30px;
-            }
-            a {
-                display: block;
-                text-decoration: none;
-                background: rgba(255,255,255,0.2);
-                padding: 15px 25px;
-                margin: 10px;
-                border-radius: 10px;
-                color: white;
-                font-size: 1.2em;
-                transition: 0.3s;
-            }
-            a:hover {
-                background: rgba(255,255,255,0.4);
-            }
-        </style>
-    </head>
-    <body>
-        <h1>🎶 YouTube Radio</h1>
-    """
-
-    for name in PLAYLISTS.keys():
-        html += f'<a href="/listen/{name}" target="_blank">{name.upper()} Playlist ▶️</a>'
-
-    html += """
-    </body>
-    </html>
-    """
-    return html
-
-
+        time.sleep(240)  # ping every 4 minutes
 
 # ==============================================================
 # 🚀 START SERVER
