@@ -87,6 +87,7 @@ def stream_worker_radio(name):
                 logging.warning(f"[{name}] No playlist ids found; sleeping...")
                 time.sleep(10)
                 continue
+
             vid = ids[s["INDEX"] % len(ids)]
             s["INDEX"] += 1
             url = f"https://www.youtube.com/watch?v={vid}"
@@ -98,17 +99,22 @@ def stream_worker_radio(name):
                 f'-o - --quiet --no-warnings "{url}" | '
                 f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
             )
+
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
             while True:
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
-                if len(s["QUEUE"]) < MAX_QUEUE:
-                    s["QUEUE"].append(chunk)
+                # 🟢 Instead of skipping when queue is full, block until space
+                while len(s["QUEUE"]) >= MAX_QUEUE:
+                    time.sleep(0.05)
+                s["QUEUE"].append(chunk)
 
-            proc.stdout.close()
             proc.wait()
-            logging.info(f"[{name}] ✅ Finished one track.")
+            logging.info(f"[{name}] ✅ Track completed.")
+            time.sleep(2)  # small delay before next video
+
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
