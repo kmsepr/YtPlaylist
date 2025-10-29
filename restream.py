@@ -184,6 +184,60 @@ def keep_alive():
             pass
         time.sleep(240)  # Ping every 4 minutes
 
+@app.route("/")
+def home():
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>YouTube Radio 🎧</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: linear-gradient(135deg, #4facfe, #00f2fe);
+                color: #fff;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+            }
+            h1 {
+                font-size: 2.5em;
+                margin-bottom: 30px;
+            }
+            a {
+                display: block;
+                text-decoration: none;
+                background: rgba(255,255,255,0.2);
+                padding: 15px 25px;
+                margin: 10px;
+                border-radius: 10px;
+                color: white;
+                font-size: 1.2em;
+                transition: 0.3s;
+            }
+            a:hover {
+                background: rgba(255,255,255,0.4);
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🎶 YouTube Radio</h1>
+    """
+
+    for name in PLAYLISTS.keys():
+        html += f'<a href="/listen/{name}" target="_blank">{name.upper()} Playlist ▶️</a>'
+
+    html += """
+    </body>
+    </html>
+    """
+    return html
+
+
+
 # ==============================================================
 # 🚀 START SERVER
 # ==============================================================
