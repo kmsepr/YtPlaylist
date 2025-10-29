@@ -185,6 +185,8 @@ PLAYLISTS = {
 
 "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 
+"samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
+
 }
 
 STREAMS_RADIO = {}
