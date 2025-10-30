@@ -4,6 +4,7 @@ import json
 import threading
 import subprocess
 import logging
+import random
 from logging.handlers import RotatingFileHandler
 from collections import deque
 from flask import Flask, Response, render_template_string, abort, stream_with_context
@@ -21,25 +22,35 @@ CACHE_FILE = "/mnt/data/playlist_cache.json"
 os.makedirs(DOWNLOAD_DIR := "/mnt/data/radio_cache", exist_ok=True)
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
+handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3)
 logging.getLogger().addHandler(handler)
 
+# 🎚️ Playlist dictionary
 PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
     "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
     "studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
     "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
+    "malayalam_old": "https://youtube.com/playlist?list=PLXHm2TI693lG2smBNUShYabsQK1Zr2Fos",
+    "old_movies": "https://youtube.com/playlist?list=PL5AU0qGqil3Aro_qt6eQb7EYYFe-xeG9p",
+}
 
-"malayalam_old": "https://youtube.com/playlist?list=PLXHm2TI693lG2smBNUShYabsQK1Zr2Fos",
-
-"old_movies": "https://youtube.com/playlist?list=PL5AU0qGqil3Aro_qt6eQb7EYYFe-xeG9p",
-
+# 🧭 Playback mode per playlist: "normal", "reverse", or "shuffle"
+PLAYLIST_MODES = {
+    "kas_ranker": "normal",
+    "ca": "shuffle",
+    "studyiq": "reverse",
+    "hindi": "normal",
+    "samastha": "shuffle",
+    "malayalam_old": "reverse",
+    "old_movies": "shuffle",
 }
 
 STREAMS_RADIO = {}
 MAX_QUEUE = 128
-REFRESH_INTERVAL = 1800  # 30 min
+REFRESH_INTERVAL = 1800  # 30 minutes
+
 
 def load_cache_radio():
     if os.path.exists(CACHE_FILE):
@@ -49,38 +60,52 @@ def load_cache_radio():
             return {}
     return {}
 
+
 def save_cache_radio(data):
     try:
         json.dump(data, open(CACHE_FILE, "w"))
     except Exception as e:
         logging.error(e)
 
+
 CACHE_RADIO = load_cache_radio()
 
+
 def load_playlist_ids_radio(name, force=False):
+    """Fetch playlist IDs from YouTube or cache"""
     now = time.time()
     cached = CACHE_RADIO.get(name, {})
     if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
-        return cached["ids"]
+        ids = cached["ids"]
+    else:
+        url = PLAYLISTS[name]
+        try:
+            logging.info(f"[{name}] Refreshing playlist...")
+            res = subprocess.run(
+                ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
+                capture_output=True, text=True, check=True
+            )
+            data = json.loads(res.stdout)
+            ids = [e["id"] for e in data.get("entries", []) if "id" in e]
+            CACHE_RADIO[name] = {"ids": ids, "time": now}
+            save_cache_radio(CACHE_RADIO)
+            logging.info(f"[{name}] Cached {len(ids)} videos.")
+        except Exception as e:
+            logging.error(f"[{name}] Playlist error: {e}")
+            ids = cached.get("ids", [])
 
-    url = PLAYLISTS[name]
-    try:
-        logging.info(f"[{name}] Refreshing playlist...")
-        res = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            capture_output=True, text=True, check=True
-        )
-        data = json.loads(res.stdout)
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e][::-1]
-        CACHE_RADIO[name] = {"ids": ids, "time": now}
-        save_cache_radio(CACHE_RADIO)
-        logging.info(f"[{name}] Cached {len(ids)} videos.")
-        return ids
-    except Exception as e:
-        logging.error(f"[{name}] Playlist error: {e}")
-        return cached.get("ids", [])
+    # 🧠 Apply playlist playback mode
+    mode = PLAYLIST_MODES.get(name, "normal")
+    if mode == "reverse":
+        ids = ids[::-1]
+    elif mode == "shuffle":
+        random.shuffle(ids)
+
+    return ids
+
 
 def stream_worker_radio(name):
+    """Background worker to stream each playlist continuously"""
     s = STREAMS_RADIO[name]
     while True:
         try:
@@ -111,18 +136,18 @@ def stream_worker_radio(name):
                 chunk = proc.stdout.read(4096)
                 if not chunk:
                     break
-                # 🟢 Instead of skipping when queue is full, block until space
                 while len(s["QUEUE"]) >= MAX_QUEUE:
                     time.sleep(0.05)
                 s["QUEUE"].append(chunk)
 
             proc.wait()
             logging.info(f"[{name}] ✅ Track completed.")
-            time.sleep(2)  # small delay before next video
+            time.sleep(2)
 
         except Exception as e:
             logging.error(f"[{name}] Worker error: {e}")
             time.sleep(5)
+
 
 @app.route("/")
 def home():
@@ -134,13 +159,15 @@ def home():
 body{background:#000;color:#0f0;font-family:Arial,Helvetica,sans-serif;text-align:center;margin:0;padding:12px}
 a{display:block;color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:8px;border-radius:8px;font-size:18px}
 a:hover{background:#0f0;color:#000}
+small{display:block;color:#888;font-size:13px;margin-top:4px}
 </style></head><body>
 <h2>🎶 YouTube Playlist Radio</h2>
 {% for p in playlists %}
-  <a href="/listen/{{p}}">▶ {{p|capitalize}}</a>
+  <a href="/listen/{{p}}">▶ {{p|capitalize}}<small>{{modes[p]}}</small></a>
 {% endfor %}
 </body></html>"""
-    return render_template_string(html, playlists=playlists)
+    return render_template_string(html, playlists=playlists, modes=PLAYLIST_MODES)
+
 
 @app.route("/listen/<name>")
 def listen_radio_download(name):
@@ -157,6 +184,7 @@ def listen_radio_download(name):
     headers = {"Content-Disposition": f"attachment; filename={name}.mp3"}
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
 
+
 @app.route("/stream/<name>")
 def stream_audio(name):
     if name not in STREAMS_RADIO:
@@ -169,6 +197,7 @@ def stream_audio(name):
             else:
                 time.sleep(0.05)
     return Response(stream_with_context(gen()), mimetype="audio/mpeg")
+
 
 # ==============================================================
 # 🚀 START SERVER
