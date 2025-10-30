@@ -34,8 +34,6 @@ PLAYLISTS = {
 
 "malayalam_old": "https://youtube.com/playlist?list=PLXHm2TI693lG2smBNUShYabsQK1Zr2Fos",
 
-"malayalam_comedy": "https://youtube.com/playlist?list=PLzwXwKAe9LnXJUPnPtvQK0Z70C4-CVkUG",
-
 }
 
 STREAMS_RADIO = {}
