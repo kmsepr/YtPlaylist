@@ -30,6 +30,11 @@ PLAYLISTS = {
     "studyiq": "https://youtube.com/playlist?list=PLMDetQy00TVmlsN2dnS_ybPdmAf02m9Y8",
     "hindi": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
+
+"malayalam_old": "https://youtube.com/playlist?list=PLXHm2TI693lG2smBNUShYabsQK1Zr2Fos",
+
+"old_movies": "https://youtube.com/playlist?list=PL5AU0qGqil3Aro_qt6eQb7EYYFe-xeG9p",
+
 }
 
 STREAMS_RADIO = {}
