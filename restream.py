@@ -32,6 +32,8 @@ PLAYLISTS = {
     
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
 
+    "youtube_playlist": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+
 
 
 }
