@@ -101,7 +101,7 @@ def stream_worker_radio(name):
                 f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
                 f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
                 f'-o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
+                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 64k -f mp3 pipe:1'
             )
 
             proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
