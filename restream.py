@@ -22,7 +22,7 @@ CACHE_FILE = "/mnt/data/playlist_cache.json"
 os.makedirs(DOWNLOAD_DIR := "/mnt/data/radio_cache", exist_ok=True)
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5*1024*1024, backupCount=3)
+handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3)
 logging.getLogger().addHandler(handler)
 
 PLAYLISTS = {
@@ -171,8 +171,7 @@ a:hover,button:hover{background:#0f0;color:#000}
 <div class="card">
   <h3>{{p|capitalize}}</h3>
   <p>Mode: <b>{{playlist_modes[p]}}</b></p>
-  <a href="/listen/{{p}}">▶ Listen / Download</a> |
-  <a href="/stream/{{p}}">🎧 Stream Live</a><br><br>
+  <a href="/listen/{{p}}">🎧 Listen / Download</a><br><br>
   <form action="/mode/{{p}}" method="post">
     <button name="mode" value="normal">Normal</button>
     <button name="mode" value="shuffle">Shuffle</button>
@@ -196,19 +195,6 @@ def listen_radio_download(name):
                 time.sleep(0.05)
     headers = {"Content-Disposition": f"attachment; filename={name}.mp3"}
     return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
-
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS_RADIO:
-        abort(404)
-    s = STREAMS_RADIO[name]
-    def gen():
-        while True:
-            if s["QUEUE"]:
-                yield s["QUEUE"].popleft()
-            else:
-                time.sleep(0.05)
-    return Response(stream_with_context(gen()), mimetype="audio/mpeg")
 
 @app.route("/mode/<name>", methods=["POST"])
 def change_mode(name):
