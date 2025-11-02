@@ -29,7 +29,7 @@ PLAYLISTS = {
     "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
     "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
     "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
-    "youtube_playlist": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
+    "hindi_playlist": "https://youtube.com/playlist?list=PLlXSv-ic4-yJj2djMawc8XqqtCn1BVAc2",
 }
 
 # Default playback modes per playlist
@@ -37,7 +37,7 @@ DEFAULT_MODES = {
     "kas_ranker": "shuffle",
     "ca": "normal",
     "samastha": "reverse",
-    "youtube_playlist": "normal",
+    "hindi_playlist": "normal",
 }
 
 STREAMS_RADIO = {}
