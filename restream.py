@@ -9,7 +9,7 @@ HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <head>
-  <title>MP3 Converter (to 16kbps)</title>
+  <title>YouTube ➜ MP3 (16kbps)</title>
   <style>
     body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
     input[type=text] { width: 90%; padding: 10px; font-size: 16px; border-radius: 6px; border: none; }
@@ -19,53 +19,56 @@ HTML_FORM = """
   </style>
 </head>
 <body>
-  <h2>🎵 MP3 Converter (64kbps ➜ 16kbps)</h2>
+  <h2>🎧 YouTube ➜ MP3 Converter (16kbps)</h2>
   <form method="get" action="/convert">
-    <input type="text" name="url" placeholder="Paste direct MP3 URL here..." required>
+    <input type="text" name="url" placeholder="Paste YouTube URL here..." required>
     <br><button type="submit">Convert</button>
   </form>
-  <p style="margin-top:30px;color:#aaa;">Example: https://s60tube.io.vn/relay?u=https%3A%2F%2Fvideo.2yxa.mobi%2Fusers%2F2yxa_ru_1b883oYcAmo_imp812548_432055.mp3</p>
+  <p style="margin-top:30px;color:#aaa;">Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ</p>
 </body>
 </html>
 """
 
-@app.route('/')
+@app.route("/")
 def index():
     return render_template_string(HTML_FORM)
 
-@app.route('/convert')
+@app.route("/convert")
 def convert():
-    mp3_url = request.args.get('url')
-    if not mp3_url:
+    yt_url = request.args.get("url")
+    if not yt_url:
         return abort(400, "Missing ?url parameter")
 
-    # Create temporary files
-    tmp_input = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    tmp_output = tempfile.NamedTemporaryFile(suffix="_16kbps.mp3", delete=False)
-    tmp_input.close()
-    tmp_output.close()
+    tmpdir = tempfile.mkdtemp()
+    tmp_audio = os.path.join(tmpdir, "audio.mp3")
+    output_16k = os.path.join(tmpdir, "converted_16kbps.mp3")
 
     try:
-        # Use ffmpeg to re-encode to 16 kbps
-        cmd = [
+        # Download audio using yt-dlp
+        cmd_download = [
+            "yt-dlp", "-f", "bestaudio",
+            "--extract-audio", "--audio-format", "mp3",
+            "--audio-quality", "64K",  # start with 64 kbps before re-encode
+            "-o", tmp_audio,
+            yt_url
+        ]
+        subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+        # Convert to 16 kbps MP3 using ffmpeg
+        cmd_convert = [
             "ffmpeg", "-y",
-            "-i", mp3_url,
+            "-i", tmp_audio,
             "-b:a", "16k",
             "-ar", "22050",
             "-ac", "1",
-            tmp_output.name
+            output_16k
         ]
-        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run(cmd_convert, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
-        # Serve converted file for download
-        return send_file(tmp_output.name, as_attachment=True, download_name="converted_16kbps.mp3")
+        return send_file(output_16k, as_attachment=True, download_name="youtube_16kbps.mp3")
 
     except subprocess.CalledProcessError as e:
-        return f"<pre>❌ FFmpeg error:\n{e.stderr.decode(errors='ignore')}</pre>", 500
-    finally:
-        # Cleanup temp input file if it exists
-        if os.path.exists(tmp_input.name):
-            os.remove(tmp_input.name)
+        return f"<pre>❌ Error:\n{e.stderr.decode(errors='ignore')}</pre>", 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
