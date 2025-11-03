@@ -1,147 +1,156 @@
 import os
 import time
-import glob
 import threading
-import subprocess
 import logging
-from datetime import datetime
-from flask import Flask, request, send_file, render_template_string, abort
+import subprocess
+from datetime import datetime, timedelta
+from flask import Flask, request, send_file, render_template_string
 
-# ====================================================
-# ⚙️ Flask + Logging setup
-# ====================================================
+# ==============================================================
+# 🧩 Setup
+# ==============================================================
+
 app = Flask(__name__)
+CACHE_DIR = "youtube_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_EXPIRY_HOURS = 24
+download_locks = {}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-MP3_DIR = "youtube_cache"
-COOKIES_FILE = "/mnt/data/cookies.txt"
-CACHE_DURATION = 86400  # 1 day (in seconds)
-os.makedirs(MP3_DIR, exist_ok=True)
+# ==============================================================
+# 🧹 Auto-clean old cache
+# ==============================================================
 
-# ====================================================
-# 🧹 Cleanup old MP3 files (every hour)
-# ====================================================
 def cleanup_cache():
     while True:
         now = time.time()
-        for f in glob.glob(f"{MP3_DIR}/*.mp3"):
-            if now - os.path.getmtime(f) > CACHE_DURATION:
-                logging.info(f"🗑️ Removing expired file: {f}")
-                os.remove(f)
-        time.sleep(3600)
+        for f in os.listdir(CACHE_DIR):
+            path = os.path.join(CACHE_DIR, f)
+            if os.path.isfile(path):
+                age = now - os.path.getmtime(path)
+                if age > CACHE_EXPIRY_HOURS * 3600:
+                    try:
+                        os.remove(path)
+                        logging.info(f"🧹 Deleted expired cache: {f}")
+                    except Exception as e:
+                        logging.error(f"⚠️ Failed to delete {f}: {e}")
+        time.sleep(3600)  # check every hour
 
 threading.Thread(target=cleanup_cache, daemon=True).start()
 
-# ====================================================
-# 🏠 Home page - List cached MP3s
-# ====================================================
+# ==============================================================
+# 🏠 Home Page
+# ==============================================================
+
 @app.route("/")
-def home():
-    files = []
-    for path in sorted(glob.glob(f"{MP3_DIR}/*.mp3"), key=os.path.getmtime, reverse=True):
-        name = os.path.basename(path)
-        size = os.path.getsize(path) // 1024
-        mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
-        files.append({"name": name, "size": size, "mtime": mtime})
-
-    return render_template_string("""
-    <html>
-    <head>
-      <title>YouTube → MP3 (Mono)</title>
-      <style>
-        body { font-family: sans-serif; background: #111; color: #eee; padding: 10px; }
-        input[type=text] { width: 75%; padding: 6px; }
-        button { padding: 6px 10px; background: #2b2; color: #fff; border: none; }
-        a { color: #4cf; }
-        table { border-collapse: collapse; width: 100%; margin-top: 15px; }
-        td, th { border: 1px solid #333; padding: 5px; }
-      </style>
-    </head>
-    <body>
-      <h2>🎵 YouTube → MP3 Converter (Mono, Cached 1 Day)</h2>
-      <form action="/convert" method="post">
-        <input type="text" name="url" placeholder="Paste YouTube URL here" required>
-        <button type="submit">Convert</button>
-      </form>
-      <h3>Cached MP3 Files</h3>
-      <table>
-        <tr><th>Title</th><th>Size (KB)</th><th>Saved</th><th>Play</th></tr>
+def index():
+    files = sorted(
+        [f for f in os.listdir(CACHE_DIR) if f.endswith(".mp3")],
+        key=lambda x: os.path.getmtime(os.path.join(CACHE_DIR, x)),
+        reverse=True
+    )
+    html = """
+    <html><head><title>YouTube → MP3 (16 kbps)</title></head>
+    <body style='font-family:sans-serif; text-align:center;'>
+        <h2>YouTube → MP3 Converter</h2>
+        <form action="/download" method="post">
+            <input name="url" placeholder="YouTube URL" style="width:60%;padding:6px;">
+            <button type="submit">Convert</button>
+        </form>
+        <h3>Cached Files (expires after 1 day)</h3>
+        <ul style="list-style:none;padding:0;">
         {% for f in files %}
-        <tr>
-          <td>{{ f.name }}</td>
-          <td>{{ f.size }}</td>
-          <td>{{ f.mtime }}</td>
-          <td><a href="/play/{{ f.name }}">▶️</a></td>
-        </tr>
+          <li><a href="/cache/{{f}}">{{f}}</a></li>
         {% endfor %}
-      </table>
-    </body>
-    </html>
-    """, files=files)
+        </ul>
+    </body></html>
+    """
+    return render_template_string(html, files=files)
 
-# ====================================================
-# ▶️ Conversion route
-# ====================================================
-@app.route("/convert", methods=["POST"])
-def convert():
+# ==============================================================
+# 🎧 Download route
+# ==============================================================
+
+@app.route("/download", methods=["POST"])
+def download_audio():
     url = request.form.get("url")
     if not url:
-        abort(400, "Missing YouTube URL")
+        return "Missing URL", 400
 
-    # Get safe video ID
-    vid_id = url.split("v=")[-1].split("&")[0] if "v=" in url else url.split("/")[-1]
-    output_path = os.path.join(MP3_DIR, f"{vid_id}.mp3")
+    # Normalize video ID
+    vid = url.split("v=")[-1].split("&")[0] if "v=" in url else url.split("/")[-1]
+    out_path = os.path.join(CACHE_DIR, f"{vid}.mp3")
 
-    if os.path.exists(output_path):
-        logging.info(f"🎵 Using cached MP3: {output_path}")
-        return f"✅ Already cached: <a href='/play/{os.path.basename(output_path)}'>Play</a>"
+    if os.path.exists(out_path):
+        logging.info(f"✅ Using cached file: {out_path}")
+        return send_file(out_path, as_attachment=True)
 
-    # yt-dlp + ffmpeg mono command
-    cmd = [
-        "yt-dlp",
-        "--cookies", COOKIES_FILE,
-        "-x", "--audio-format", "mp3",
-        "--audio-quality", "16K",
-        "--postprocessor-args", "ffmpeg:-ac 1 -loglevel info",
-        "-o", os.path.join(MP3_DIR, "%(id)s.%(ext)s"),
-        url,
-    ]
+    if url in download_locks:
+        logging.info(f"⚠️ Already downloading: {url}")
+        download_locks[url].join()
+        if os.path.exists(out_path):
+            return send_file(out_path, as_attachment=True)
+        return "Download failed", 500
 
-    logging.info("🚀 Starting conversion")
-    logging.info(f"URL: {url}")
-    logging.info(f"Output: {output_path}")
-    logging.info("Command: " + " ".join(cmd))
+    def run_download():
+        try:
+            # --------------------------
+            # Pick the lowest available format (smallest file)
+            # --------------------------
+            cmd = [
+                "yt-dlp",
+                "-f", "worstaudio/worst",
+                "-x", "--audio-format", "mp3",
+                "--audio-quality", "16K",
+                "--postprocessor-args", "ffmpeg:-ac 1 -loglevel info",
+                "--no-playlist",
+                "--cookies", "/mnt/data/cookies.txt",
+                "-o", f"{CACHE_DIR}/%(id)s.%(ext)s",
+                url,
+            ]
 
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            logging.info("🚀 Starting conversion")
+            logging.info(f"URL: {url}")
+            logging.info(f"Output: {out_path}")
+            logging.info(f"Command: {' '.join(cmd)}")
 
-    for line in process.stdout:
-        logging.info(line.strip())
+            subprocess.run(cmd, check=True)
+            logging.info("✅ Conversion complete")
 
-    process.wait()
-    logging.info(f"✅ Conversion completed with exit code {process.returncode}")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"❌ yt-dlp failed: {e}")
+        except Exception as e:
+            logging.error(f"⚠️ Error: {e}")
+        finally:
+            download_locks.pop(url, None)
 
-    if not os.path.exists(output_path):
-        logging.error("❌ Conversion failed or file not found")
-        return "❌ Conversion failed. Check Koyeb logs for details."
+    t = threading.Thread(target=run_download)
+    download_locks[url] = t
+    t.start()
+    t.join()
 
-    logging.info(f"✅ File saved: {output_path} ({os.path.getsize(output_path)//1024} KB)")
-    return f"✅ Done: <a href='/play/{os.path.basename(output_path)}'>Play</a>"
+    if os.path.exists(out_path):
+        return send_file(out_path, as_attachment=True)
+    return "Conversion failed", 500
 
-# ====================================================
-# 🎧 Play MP3
-# ====================================================
-@app.route("/play/<filename>")
-def play(filename):
-    path = os.path.join(MP3_DIR, filename)
-    if not os.path.exists(path):
-        abort(404)
-    return send_file(path, mimetype="audio/mpeg", as_attachment=False)
+# ==============================================================
+# 📦 Serve cached files
+# ==============================================================
 
-# ====================================================
-# 🚀 Run on Koyeb
-# ====================================================
+@app.route("/cache/<path:filename>")
+def get_cache(filename):
+    path = os.path.join(CACHE_DIR, filename)
+    if os.path.exists(path):
+        return send_file(path, as_attachment=True)
+    return "File not found", 404
+
+# ==============================================================
+# 🚀 Main
+# ==============================================================
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
