@@ -1,89 +1,125 @@
 import os
+import time
+import glob
+import threading
 import subprocess
-import tempfile
+from datetime import datetime, timedelta
 from flask import Flask, request, send_file, render_template_string, abort
 
 app = Flask(__name__)
 
+# -------------------------------
+# 📂 Basic config
+# -------------------------------
+MP3_DIR = "youtube_cache"
 COOKIES_FILE = "/mnt/data/cookies.txt"
+os.makedirs(MP3_DIR, exist_ok=True)
+CACHE_DURATION = 86400  # 1 day (in seconds)
 
-HTML_FORM = """
-<!DOCTYPE html>
-<html>
-<head>
-  <title>YouTube ➜ MP3 (16kbps)</title>
-  <style>
-    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
-    input[type=text] { width: 90%; padding: 10px; font-size: 16px; border-radius: 6px; border: none; }
-    button { margin-top: 20px; padding: 10px 20px; font-size: 16px; border: none; border-radius: 6px;
-             background: #28a745; color: white; cursor: pointer; }
-    button:hover { background: #218838; }
-  </style>
-</head>
-<body>
-  <h2>🎧 YouTube ➜ MP3 Converter (16kbps)</h2>
-  <form method="get" action="/convert">
-    <input type="text" name="url" placeholder="Paste YouTube URL here..." required>
-    <br><button type="submit">Convert</button>
-  </form>
-  <p style="margin-top:30px;color:#aaa;">Works for normal videos, shorts, and past livestreams.</p>
-</body>
-</html>
-"""
+# -------------------------------
+# 🧹 Auto cleanup thread
+# -------------------------------
+def cleanup_old_files():
+    while True:
+        now = time.time()
+        for f in glob.glob(f"{MP3_DIR}/*.mp3"):
+            if now - os.path.getmtime(f) > CACHE_DURATION:
+                os.remove(f)
+        time.sleep(3600)  # check every hour
 
+threading.Thread(target=cleanup_old_files, daemon=True).start()
+
+# -------------------------------
+# 🏠 Home route - list cached MP3s
+# -------------------------------
 @app.route("/")
-def index():
-    return render_template_string(HTML_FORM)
+def home():
+    files = []
+    for path in sorted(glob.glob(f"{MP3_DIR}/*.mp3"), key=os.path.getmtime, reverse=True):
+        name = os.path.basename(path)
+        size = os.path.getsize(path) // 1024
+        mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
+        files.append({"name": name, "size": size, "mtime": mtime})
+    return render_template_string("""
+    <html>
+    <head>
+      <title>YouTube to MP3 Cache</title>
+      <style>
+        body { font-family: sans-serif; padding: 10px; }
+        input[type=text] { width: 80%; padding: 6px; }
+        button { padding: 6px 10px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 15px; }
+        td, th { border: 1px solid #ccc; padding: 6px; }
+      </style>
+    </head>
+    <body>
+      <h2>🎵 YouTube to MP3 Converter (cached 1 day)</h2>
+      <form action="/convert" method="post">
+        <input type="text" name="url" placeholder="Paste YouTube URL here" required>
+        <button type="submit">Convert</button>
+      </form>
 
-@app.route("/convert")
+      <h3>Cached MP3 Files</h3>
+      <table>
+        <tr><th>Title</th><th>Size (KB)</th><th>Saved</th><th>Play</th></tr>
+        {% for f in files %}
+          <tr>
+            <td>{{ f.name }}</td>
+            <td>{{ f.size }}</td>
+            <td>{{ f.mtime }}</td>
+            <td><a href="/play/{{ f.name }}">Play</a></td>
+          </tr>
+        {% endfor %}
+      </table>
+    </body>
+    </html>
+    """, files=files)
+
+# -------------------------------
+# ▶️ Convert route
+# -------------------------------
+@app.route("/convert", methods=["POST"])
 def convert():
-    yt_url = request.args.get("url")
-    if not yt_url:
-        return abort(400, "Missing ?url parameter")
+    url = request.form.get("url")
+    if not url:
+        abort(400, "Missing URL")
 
-    tmpdir = tempfile.mkdtemp()
-    tmp_audio = os.path.join(tmpdir, "audio.mp3")
-    output_16k = os.path.join(tmpdir, "converted_16kbps.mp3")
+    # Extract video ID or safe filename
+    vid_id = url.split("v=")[-1].split("&")[0] if "v=" in url else url.split("/")[-1]
+    output_path = os.path.join(MP3_DIR, f"{vid_id}.mp3")
 
-    try:
-        # Step 1: Try bestaudio format
-        cmd_download = [
-            "yt-dlp", "-f", "bestaudio/best",
-            "--extract-audio", "--audio-format", "mp3",
-            "--audio-quality", "64K",
-            "--cookies", COOKIES_FILE,
-            "-o", tmp_audio,
-            yt_url
-        ]
+    # If cached already
+    if os.path.exists(output_path):
+        return f"Already cached: <a href='/play/{os.path.basename(output_path)}'>Play</a>"
 
-        result = subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            # Retry with alternate format (useful for livestream replays)
-            cmd_download_alt = [
-                "yt-dlp", "-f", "worstaudio/worst",
-                "--extract-audio", "--audio-format", "mp3",
-                "--audio-quality", "64K",
-                "--cookies", COOKIES_FILE,
-                "-o", tmp_audio,
-                yt_url
-            ]
-            subprocess.run(cmd_download_alt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    # Run yt-dlp
+    cmd = [
+        "yt-dlp",
+        "--cookies", COOKIES_FILE,
+        "-x", "--audio-format", "mp3",
+        "--audio-quality", "64K",
+        "-o", os.path.join(MP3_DIR, "%(id)s.%(ext)s"),
+        url,
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Step 2: Convert to 16 kbps MP3
-        cmd_convert = [
-            "ffmpeg", "-y",
-            "-i", tmp_audio,
-            "-b:a", "16k",
-            "-ar", "22050",
-            "-ac", "1",
-            output_16k
-        ]
-        subprocess.run(cmd_convert, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    if not os.path.exists(output_path):
+        return "❌ Failed to download or convert."
 
-        return send_file(output_16k, as_attachment=True, download_name="youtube_16kbps.mp3")
+    return f"✅ Converted: <a href='/play/{os.path.basename(output_path)}'>Play</a>"
 
-    except subprocess.CalledProcessError as e:
-        return f"<pre>❌ Error:\n{e.stderr.decode(errors='ignore')}</pre>", 500
+# -------------------------------
+# 🎧 Play route
+# -------------------------------
+@app.route("/play/<filename>")
+def play(filename):
+    path = os.path.join(MP3_DIR, filename)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, as_attachment=False, mimetype="audio/mpeg")
 
+# -------------------------------
+# 🚀 Run
+# -------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
