@@ -5,7 +5,6 @@ from flask import Flask, request, send_file, render_template_string, abort
 
 app = Flask(__name__)
 
-# Path to your cookies file
 COOKIES_FILE = "/mnt/data/cookies.txt"
 
 HTML_FORM = """
@@ -27,7 +26,7 @@ HTML_FORM = """
     <input type="text" name="url" placeholder="Paste YouTube URL here..." required>
     <br><button type="submit">Convert</button>
   </form>
-  <p style="margin-top:30px;color:#aaa;">Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ</p>
+  <p style="margin-top:30px;color:#aaa;">Works for normal videos, shorts, and past livestreams.</p>
 </body>
 </html>
 """
@@ -47,12 +46,9 @@ def convert():
     output_16k = os.path.join(tmpdir, "converted_16kbps.mp3")
 
     try:
-        # ---------------------------
-        # Step 1: Download with yt-dlp
-        # ---------------------------
+        # Step 1: Try bestaudio format
         cmd_download = [
-            "yt-dlp",
-            "-f", "bestaudio",
+            "yt-dlp", "-f", "bestaudio/best",
             "--extract-audio", "--audio-format", "mp3",
             "--audio-quality", "64K",
             "--cookies", COOKIES_FILE,
@@ -60,11 +56,20 @@ def convert():
             yt_url
         ]
 
-        subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        result = subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            # Retry with alternate format (useful for livestream replays)
+            cmd_download_alt = [
+                "yt-dlp", "-f", "worstaudio/worst",
+                "--extract-audio", "--audio-format", "mp3",
+                "--audio-quality", "64K",
+                "--cookies", COOKIES_FILE,
+                "-o", tmp_audio,
+                yt_url
+            ]
+            subprocess.run(cmd_download_alt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
-        # ---------------------------
-        # Step 2: Convert to 16 kbps
-        # ---------------------------
+        # Step 2: Convert to 16 kbps MP3
         cmd_convert = [
             "ffmpeg", "-y",
             "-i", tmp_audio,
@@ -81,4 +86,4 @@ def convert():
         return f"<pre>❌ Error:\n{e.stderr.decode(errors='ignore')}</pre>", 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=5000)
