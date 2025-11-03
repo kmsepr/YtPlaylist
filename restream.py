@@ -104,7 +104,7 @@ def convert():
         "yt-dlp",
         "--cookies", COOKIES_FILE,
         "-x", "--audio-format", "mp3",
-        "--audio-quality", "64K",
+        "--audio-quality", "16K",
         "--postprocessor-args", "ffmpeg:-ac 1 -loglevel info",
         "-o", os.path.join(MP3_DIR, "%(id)s.%(ext)s"),
         url,
