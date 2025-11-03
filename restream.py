@@ -1,278 +1,71 @@
 import os
-import time
-import json
-import threading
 import subprocess
-import logging
-from logging.handlers import RotatingFileHandler
-from collections import deque
-from flask import Flask, Response, render_template_string, abort, stream_with_context, request, send_file
+import tempfile
+from flask import Flask, request, send_file, render_template_string, abort
 
-# ==============================================================
-# ⚙️ Setup
-# ==============================================================
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 app = Flask(__name__)
 
-LOG_PATH = "/mnt/data/radio.log"
-COOKIES_PATH = "/mnt/data/cookies.txt"
-CACHE_FILE = "/mnt/data/playlist_cache.json"
+HTML_FORM = """
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MP3 Converter (to 16kbps)</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
+    input[type=text] { width: 90%; padding: 10px; font-size: 16px; border-radius: 6px; border: none; }
+    button { margin-top: 20px; padding: 10px 20px; font-size: 16px; border: none; border-radius: 6px;
+             background: #28a745; color: white; cursor: pointer; }
+    button:hover { background: #218838; }
+  </style>
+</head>
+<body>
+  <h2>🎵 MP3 Converter (64kbps ➜ 16kbps)</h2>
+  <form method="get" action="/convert">
+    <input type="text" name="url" placeholder="Paste direct MP3 URL here..." required>
+    <br><button type="submit">Convert</button>
+  </form>
+  <p style="margin-top:30px;color:#aaa;">Example: https://s60tube.io.vn/relay?u=https%3A%2F%2Fvideo.2yxa.mobi%2Fusers%2F2yxa_ru_1b883oYcAmo_imp812548_432055.mp3</p>
+</body>
+</html>
+"""
 
-os.makedirs(DOWNLOAD_DIR := "/mnt/data/radio_cache", exist_ok=True)
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+@app.route('/')
+def index():
+    return render_template_string(HTML_FORM)
 
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3)
-logging.getLogger().addHandler(handler)
+@app.route('/convert')
+def convert():
+    mp3_url = request.args.get('url')
+    if not mp3_url:
+        return abort(400, "Missing ?url parameter")
 
-# ==============================================================
-# 🎶 YouTube Playlist Radio SECTION
-# ==============================================================
-
-PLAYLISTS = {
-    "kas_ranker": "https://youtube.com/playlist?list=PLS2N6hORhZbuZsS_2u5H_z6oOKDQT1NRZ",
-    "ca": "https://youtube.com/playlist?list=PLYKzjRvMAyci_W5xYyIXHBoR63eefUadL",
-    "samastha": "https://youtube.com/playlist?list=PLgkREi1Wpr-XgNxocxs3iPj61pqMhi9bv",
-}
-
-STREAMS_RADIO = {}
-MAX_QUEUE = 128
-REFRESH_INTERVAL = 1800  # 30 min
-
-# --------------------------------------------------------------
-# Cache Handling
-# --------------------------------------------------------------
-def load_cache_radio():
-    if os.path.exists(CACHE_FILE):
-        try:
-            return json.load(open(CACHE_FILE))
-        except Exception:
-            return {}
-    return {}
-
-def save_cache_radio(data):
-    try:
-        json.dump(data, open(CACHE_FILE, "w"))
-    except Exception as e:
-        logging.error(e)
-
-CACHE_RADIO = load_cache_radio()
-
-# --------------------------------------------------------------
-# Playlist Loading
-# --------------------------------------------------------------
-def load_playlist_ids_radio(name, force=False):
-    now = time.time()
-    cached = CACHE_RADIO.get(name, {})
-    if not force and cached and now - cached.get("time", 0) < REFRESH_INTERVAL:
-        return cached["ids"]
-
-    url = PLAYLISTS[name]
-    try:
-        logging.info(f"[{name}] Refreshing playlist...")
-        res = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "-J", url, "--cookies", COOKIES_PATH],
-            capture_output=True, text=True, check=True
-        )
-        data = json.loads(res.stdout)
-        # 🔁 Reverse order so latest videos play first
-        ids = [e["id"] for e in data.get("entries", []) if "id" in e][::-1]
-        CACHE_RADIO[name] = {"ids": ids, "time": now}
-        save_cache_radio(CACHE_RADIO)
-        logging.info(f"[{name}] Cached {len(ids)} videos (reverse order).")
-        return ids
-    except Exception as e:
-        logging.error(f"[{name}] Playlist error: {e}")
-        return cached.get("ids", [])
-
-# --------------------------------------------------------------
-# Stream Worker
-# --------------------------------------------------------------
-def stream_worker_radio(name):
-    s = STREAMS_RADIO[name]
-    while True:
-        try:
-            ids = s["IDS"]
-            if not ids:
-                ids = load_playlist_ids_radio(name, True)
-                s["IDS"] = ids
-            if not ids:
-                logging.warning(f"[{name}] No playlist ids found; sleeping...")
-                time.sleep(10)
-                continue
-
-            vid = ids[s["INDEX"] % len(ids)]
-            s["INDEX"] += 1
-            url = f"https://www.youtube.com/watch?v={vid}"
-            logging.info(f"[{name}] ▶️ {url}")
-
-            cmd = (
-                f'yt-dlp -f "bestaudio/best" --cookies "{COOKIES_PATH}" '
-                f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
-                f'-o - --quiet --no-warnings "{url}" | '
-                f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -ar 44100 -b:a 40k -f mp3 pipe:1'
-            )
-
-            proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                while len(s["QUEUE"]) >= MAX_QUEUE:
-                    time.sleep(0.05)
-                s["QUEUE"].append(chunk)
-
-            proc.wait()
-            logging.info(f"[{name}] ✅ Track completed.")
-            time.sleep(2)
-
-        except Exception as e:
-            logging.error(f"[{name}] Worker error: {e}")
-            time.sleep(5)
-
-# ==============================================================
-# 🌐 Flask Routes
-# ==============================================================
-
-@app.route("/")
-def home():
-    playlists = list(PLAYLISTS.keys())
-    cached_files = [
-        f for f in os.listdir(DOWNLOAD_DIR)
-        if f.lower().endswith(".mp3")
-    ]
-    cached_files.sort(key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)), reverse=True)
-
-    html = """<!doctype html><html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🎧 YouTube Radio</title>
-<style>
-body{background:#000;color:#0f0;font-family:Arial,Helvetica,sans-serif;text-align:center;margin:0;padding:12px}
-a{display:block;color:#0f0;text-decoration:none;border:1px solid #0f0;padding:10px;margin:8px;border-radius:8px;font-size:18px}
-a:hover{background:#0f0;color:#000}
-h3{margin-top:40px;}
-</style></head><body>
-<h2>🎶 YouTube Playlist Radio (Reverse Order)</h2>
-<p><a href="/convert">🎵 Convert a YouTube video to MP3 (16 kbps)</a></p>
-{% for p in playlists %}
-  <a href="/listen/{{p}}">▶ {{p|capitalize}}</a>
-{% endfor %}
-{% if cached_files %}
-<h3>💾 Cached MP3 Files</h3>
-{% for f in cached_files %}
-  <a href="/download/{{f}}">🎧 {{f}}</a>
-{% endfor %}
-{% endif %}
-</body></html>"""
-    return render_template_string(html, playlists=playlists, cached_files=cached_files)
-
-@app.route("/download/<filename>")
-def download_cached(filename):
-    path = os.path.join(DOWNLOAD_DIR, filename)
-    if not os.path.exists(path):
-        abort(404)
-    return send_file(path, as_attachment=True)
-
-@app.route("/listen/<name>")
-def listen_radio_download(name):
-    if name not in STREAMS_RADIO:
-        abort(404)
-    s = STREAMS_RADIO[name]
-
-    def gen():
-        while True:
-            if s["QUEUE"]:
-                yield s["QUEUE"].popleft()
-            else:
-                time.sleep(0.05)
-    headers = {"Content-Disposition": f"attachment; filename={name}.mp3"}
-    return Response(stream_with_context(gen()), mimetype="audio/mpeg", headers=headers)
-
-@app.route("/stream/<name>")
-def stream_audio(name):
-    if name not in STREAMS_RADIO:
-        abort(404)
-    s = STREAMS_RADIO[name]
-    def gen():
-        while True:
-            if s["QUEUE"]:
-                yield s["QUEUE"].popleft()
-            else:
-                time.sleep(0.05)
-    return Response(stream_with_context(gen()), mimetype="audio/mpeg")
-
-# ==============================================================
-# 🎵 YouTube → MP3 (16 kbps) Converter SECTION
-# ==============================================================
-
-@app.route("/convert", methods=["GET"])
-def convert_form():
-    html = """<!doctype html><html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>YouTube → MP3 (16kbps)</title>
-<style>
-body{background:#000;color:#0f0;font-family:Arial,Helvetica,sans-serif;text-align:center;margin:0;padding:30px}
-input[type=text]{width:80%;padding:10px;font-size:16px;border-radius:6px;border:1px solid #0f0;background:#111;color:#0f0}
-button{margin-top:12px;padding:10px 18px;font-size:16px;border:1px solid #0f0;border-radius:8px;background:#0f0;color:#000;cursor:pointer}
-button:hover{background:#fff;color:#000}
-a{color:#0f0}
-</style></head><body>
-<h2>🎵 YouTube to MP3 (16 kbps)</h2>
-<form action="/convert" method="post">
-  <input type="text" name="url" placeholder="Paste YouTube link here" required>
-  <br><button type="submit">Convert</button>
-</form>
-<p><a href="/">⬅ Back to Home</a></p>
-</body></html>"""
-    return render_template_string(html)
-
-
-@app.route("/convert", methods=["POST"])
-def convert_to_mp3():
-    url = request.form.get("url", "").strip()
-    if not url.startswith("http"):
-        return "Invalid YouTube URL", 400
+    # Create temporary files
+    tmp_input = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    tmp_output = tempfile.NamedTemporaryFile(suffix="_16kbps.mp3", delete=False)
+    tmp_input.close()
+    tmp_output.close()
 
     try:
-        timestamp = int(time.time())
-        out_path = os.path.join(DOWNLOAD_DIR, f"cached_{timestamp}.mp3")
+        # Use ffmpeg to re-encode to 16 kbps
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", mp3_url,
+            "-b:a", "16k",
+            "-ar", "22050",
+            "-ac", "1",
+            tmp_output.name
+        ]
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
-        cmd = (
-            f'yt-dlp -f "bestaudio" --no-playlist --cookies "{COOKIES_PATH}" '
-            f'--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" '
-            f'-o - "{url}" | '
-            f'ffmpeg -loglevel quiet -i pipe:0 -ac 1 -b:a 16k -ar 44100 -f mp3 "{out_path}"'
-        )
+        # Serve converted file for download
+        return send_file(tmp_output.name, as_attachment=True, download_name="converted_16kbps.mp3")
 
-        subprocess.run(cmd, shell=True, check=True)
-        logging.info(f"🎧 Converted and cached: {url} → {out_path}")
-
-        return f"""<!doctype html><html><body style="background:#000;color:#0f0;text-align:center;font-family:Arial">
-        <h3>✅ Conversion complete!</h3>
-        <p><a href="/download/{os.path.basename(out_path)}">Download MP3</a></p>
-        <p><a href="/">⬅ Back to Home</a></p></body></html>"""
-
-    except subprocess.CalledProcessError:
-        logging.error("Conversion failed")
-        return "Conversion failed. Check your URL.", 500
-    except Exception as e:
-        logging.error(e)
-        return "Unexpected error during conversion.", 500
-
-# ==============================================================
-# 🚀 START SERVER
-# ==============================================================
+    except subprocess.CalledProcessError as e:
+        return f"<pre>❌ FFmpeg error:\n{e.stderr.decode(errors='ignore')}</pre>", 500
+    finally:
+        # Cleanup temp input file if it exists
+        if os.path.exists(tmp_input.name):
+            os.remove(tmp_input.name)
 
 if __name__ == "__main__":
-    for pname in PLAYLISTS:
-        STREAMS_RADIO[pname] = {
-            "IDS": load_playlist_ids_radio(pname),
-            "INDEX": 0,
-            "QUEUE": deque(),
-            "LAST_REFRESH": time.time(),
-        }
-        threading.Thread(target=stream_worker_radio, args=(pname,), daemon=True).start()
-
-    logging.info("🚀 YouTube Playlist Radio server running at http://0.0.0.0:8000")
     app.run(host="0.0.0.0", port=8000)
