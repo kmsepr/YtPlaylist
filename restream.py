@@ -1,6 +1,5 @@
 # youtube_lite_flask_mp3.py
-# Small Flask app: search YouTube, convert to 40 kbps mono MP3, cache results,
-# show cached MP3s on home with an audio streamer (no video).
+# Small Flask app: search YouTube, convert to 40 kbps mono MP3, cache results + thumbnails.
 
 from flask import Flask, request, render_template_string, send_file, redirect, abort, url_for
 import yt_dlp
@@ -8,6 +7,7 @@ import os
 import uuid
 import pathlib
 import threading
+import requests
 
 app = Flask(__name__)
 CACHE_DIR = "cache"
@@ -32,6 +32,7 @@ input[type=text]{width:86%;padding:10px;border-radius:8px;border:0;margin-top:8p
 .audio-player{width:100%;margin-top:8px}
 a.link{color:#4cf;text-decoration:none}
 .footer{font-size:0.8em;color:#888;margin-top:12px}
+img.thumb{width:100%;border-radius:10px;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -48,13 +49,15 @@ a.link{color:#4cf;text-decoration:none}
   {% if files %}
     {% for f in files %}
       <div class="card">
-        <div><b>{{ f }}</b></div>
+        {% if f.thumb %}
+          <img class="thumb" src="{{ url_for('stream', name=f.thumb) }}">
+        {% endif %}
+        <div><b>{{ f.mp3 }}</b></div>
         <audio class="audio-player" controls preload="none">
-          <source src="{{ url_for('stream', name=f) }}" type="audio/mpeg">
-          Your browser does not support the audio element.
+          <source src="{{ url_for('stream', name=f.mp3) }}" type="audio/mpeg">
         </audio>
         <div class="small">
-          <a class="link" href="{{ url_for('cached_download', name=f) }}">Download</a>
+          <a class="link" href="{{ url_for('cached_download', name=f.mp3) }}">Download</a>
         </div>
       </div>
     {% endfor %}
@@ -80,6 +83,7 @@ body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:cent
 .card{background:#111;padding:10px;border-radius:10px;margin:8px 0;text-align:left}
 .btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none; border:0; cursor:pointer}
 .small{font-size:0.85em;color:#aaa}
+img.thumb{width:100%;border-radius:10px;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -88,6 +92,9 @@ body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:cent
   {% if results %}
     {% for v in results %}
       <div class="card">
+        {% if v.thumb %}
+          <img class="thumb" src="{{ v.thumb }}">
+        {% endif %}
         <div><b>{{ v.title }}</b></div>
         <div class="small">ID: {{ v.id }}</div>
         <div style="margin-top:8px">
@@ -107,7 +114,6 @@ body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:cent
 # --- Utilities ---
 
 def safe_path_for_name(name: str) -> str:
-    """Ensure the name refers to a file inside CACHE_DIR and prevents path traversal."""
     p = pathlib.Path(CACHE_DIR) / name
     try:
         p_resolved = p.resolve()
@@ -124,6 +130,15 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     filename = f"{uuid.uuid4()}.mp3"
     outpath = os.path.join(CACHE_DIR, filename)
 
+    # Extract metadata first
+    metadata_opts = {
+        'quiet': True,
+        'cookiefile': '/mnt/data/cookies.txt'
+    }
+    with yt_dlp.YoutubeDL(metadata_opts) as ydl_meta:
+        info = ydl_meta.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+
+    # Download audio
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': outpath,
@@ -148,6 +163,17 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     if not os.path.exists(outpath):
         raise FileNotFoundError("Expected output not found")
 
+    # Download thumbnail
+    thumb_url = info.get("thumbnail")
+    if thumb_url:
+        jpg_path = outpath.replace(".mp3", ".jpg")
+        try:
+            r = requests.get(thumb_url, timeout=10)
+            with open(jpg_path, "wb") as f:
+                f.write(r.content)
+        except:
+            pass
+
     return filename
 
 active_downloads = set()
@@ -157,8 +183,16 @@ active_lock = threading.Lock()
 
 @app.route("/")
 def home():
-    files = sorted(os.listdir(CACHE_DIR))
-    return render_template_string(HOME_HTML, files=files)
+    files = sorted([f for f in os.listdir(CACHE_DIR) if f.endswith(".mp3")])
+    items = []
+    for f in files:
+        thumb = f.replace(".mp3", ".jpg")
+        thumb_path = os.path.join(CACHE_DIR, thumb)
+        items.append({
+            "mp3": f,
+            "thumb": thumb if os.path.exists(thumb_path) else None
+        })
+    return render_template_string(HOME_HTML, files=items)
 
 @app.route("/search")
 def search():
@@ -178,9 +212,14 @@ def search():
 
     results = []
     for entry in data.get("entries", []):
+        thumb = None
+        if entry.get("thumbnails"):
+            thumb = entry["thumbnails"][-1]["url"]
+
         results.append(type("Obj", (object,), {
             "title": entry.get("title"),
-            "id": entry.get("id")
+            "id": entry.get("id"),
+            "thumb": thumb
         }))
 
     return render_template_string(SEARCH_HTML, results=results, query=q)
@@ -216,6 +255,8 @@ def stream(name):
     if not os.path.exists(path):
         abort(404)
 
+    if name.endswith(".jpg"):
+        return send_file(path, mimetype='image/jpeg', as_attachment=False)
     return send_file(path, mimetype='audio/mpeg', as_attachment=False, conditional=True)
 
 @app.route('/cached/<name>')
