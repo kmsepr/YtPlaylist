@@ -4,7 +4,6 @@
 from flask import Flask, request, render_template_string, send_file, redirect, abort, url_for
 import yt_dlp
 import os
-import uuid
 import pathlib
 import threading
 import requests
@@ -20,7 +19,9 @@ active_downloads = set()
 app = Flask(__name__)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# --- Templates (simple UI) ---
+# ===========================
+#        HTML TEMPLATES
+# ===========================
 
 HOME_HTML = """
 <!doctype html>
@@ -118,52 +119,53 @@ img.thumb{width:120px;height:auto;border-radius:8px;margin-bottom:8px}
 </html>
 """
 
-# --- Utilities ---
+# ===========================
+#        UTILITIES
+# ===========================
 
 def safe_path_for_name(name: str) -> str:
     p = pathlib.Path(CACHE_DIR) / name
     try:
-        p_resolved = p.resolve()
-        cache_resolved = pathlib.Path(CACHE_DIR).resolve()
-        if cache_resolved in p_resolved.parents or p_resolved == cache_resolved:
-            return str(p_resolved)
-    except Exception:
+        resolved = p.resolve()
+        base = pathlib.Path(CACHE_DIR).resolve()
+        if base in resolved.parents or resolved == base:
+            return str(resolved)
+    except:
         pass
     raise ValueError("Invalid filename")
 
-# --- YT-DLP / download helper ---
+# ===========================
+#  DOWNLOAD + CONVERSION
+# ===========================
 
 def download_and_convert_to_mp3(video_id: str) -> str:
-    # final paths
     mp3_name = f"{video_id}.mp3"
     jpg_name = f"{video_id}.jpg"
     mp3_path = os.path.join(CACHE_DIR, mp3_name)
     jpg_path = os.path.join(CACHE_DIR, jpg_name)
 
-    # Already exists?
     if os.path.exists(mp3_path):
         return mp3_name
 
-    # Extract metadata only
+    # Extract metadata (helps yt-dlp detect format)
     metadata_opts = {
         'quiet': True,
-        'cookiefile': COOKIES_PATH
+        'cookiefile': COOKIES_PATH,
     }
+    with yt_dlp.YoutubeDL(metadata_opts) as ydl:
+        ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
 
-    with yt_dlp.YoutubeDL(metadata_opts) as ydl_meta:
-        info = ydl_meta.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-
-    # Download + convert
+    # REAL download
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': mp3_path,
+        'outtmpl': mp3_path,          # FIXED – ensures correct filename
         'cookiefile': COOKIES_PATH,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '40',
         }],
-        'postprocessor_args': ['-ac','1','-b:a','40k'],
+        'postprocessor_args': ['-ac', '1', '-b:a', '40k'],
         'prefer_ffmpeg': True,
         'quiet': True,
         'no_warnings': True,
@@ -172,11 +174,11 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
 
-    # Compact thumbnail
-    small_thumb = f"https://i.ytimg.com/vi/{video_id}/default.jpg"
+    # Download compact thumbnail (120x90)
+    thumb_url = f"https://i.ytimg.com/vi/{video_id}/default.jpg"
 
     try:
-        r = requests.get(small_thumb, timeout=10)
+        r = requests.get(thumb_url, timeout=10)
         if r.status_code == 200:
             with open(jpg_path, "wb") as f:
                 f.write(r.content)
@@ -185,21 +187,20 @@ def download_and_convert_to_mp3(video_id: str) -> str:
 
     return mp3_name
 
-# --- Routes ---
+# ===========================
+#          ROUTES
+# ===========================
 
 @app.route("/")
 def home():
     files = sorted([f for f in os.listdir(CACHE_DIR) if f.endswith(".mp3")])
     items = []
-
     for f in files:
         thumb = f.replace(".mp3", ".jpg")
-        thumb_path = os.path.join(CACHE_DIR, thumb)
         items.append({
             "mp3": f,
-            "thumb": thumb if os.path.exists(thumb_path) else None
+            "thumb": thumb if os.path.exists(os.path.join(CACHE_DIR, thumb)) else None
         })
-
     return render_template_string(HOME_HTML, files=items)
 
 @app.route("/search")
@@ -219,17 +220,13 @@ def search():
         data = ydl.extract_info(f"ytsearch10:{q}", download=False)
 
     results = []
-
-    for entry in data.get("entries", []):
-        vid = entry.get("id")
+    for e in data.get("entries", []):
+        vid = e.get("id")
         if not vid:
             continue
-
-        # Use compact 120x90 thumbnail
         thumb = f"https://i.ytimg.com/vi/{vid}/default.jpg"
-
         results.append(type("Obj", (object,), {
-            "title": entry.get("title"),
+            "title": e.get("title"),
             "id": vid,
             "thumb": thumb
         }))
@@ -244,45 +241,46 @@ def download():
 
     with active_lock:
         if vid in active_downloads:
-            return "Conversion in progress for this video. Try again in a few seconds.", 429
+            return "Conversion in progress, try again shortly.", 429
         active_downloads.add(vid)
 
     try:
         download_and_convert_to_mp3(vid)
-    except Exception as e:
-        return f"Error while converting: {e}", 500
     finally:
         with active_lock:
             active_downloads.discard(vid)
 
-    return redirect(url_for('home'))
+    return redirect(url_for("home"))
 
-@app.route('/stream/<name>')
+@app.route("/stream/<name>")
 def stream(name):
     try:
         path = safe_path_for_name(name)
-    except ValueError:
+    except:
         abort(404)
 
     if not os.path.exists(path):
         abort(404)
 
     if name.endswith(".jpg"):
-        return send_file(path, mimetype='image/jpeg', as_attachment=False)
+        return send_file(path, mimetype="image/jpeg")
+    return send_file(path, mimetype="audio/mpeg", conditional=True)
 
-    return send_file(path, mimetype='audio/mpeg', as_attachment=False, conditional=True)
-
-@app.route('/cached/<name>')
+@app.route("/cached/<name>")
 def cached_download(name):
     try:
         path = safe_path_for_name(name)
-    except ValueError:
+    except:
         abort(404)
 
     if not os.path.exists(path):
         abort(404)
 
-    return send_file(path, mimetype='audio/mpeg', as_attachment=True, download_name=name)
+    return send_file(path, mimetype="audio/mpeg", as_attachment=True, download_name=name)
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+# ===========================
+#        RUN SERVER
+# ===========================
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=True)
