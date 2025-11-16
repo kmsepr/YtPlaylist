@@ -1,9 +1,11 @@
+# COOKIES_PATH=/mnt/data/cookies.txt
+
 FROM node:18-slim
 
-# Install Python + ffmpeg + system libs
+# Install Python + system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    python3-pip \
+    python3-venv \
     python3-dev \
     ffmpeg \
     gcc \
@@ -12,30 +14,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
  && rm -rf /var/lib/apt/lists/*
 
-# Ensure Python is default
-RUN ln -s /usr/bin/python3 /usr/bin/python
+# Create Python virtual environment
+RUN python3 -m venv /opt/venv
 
-# Install yt-dlp nightly + EJS solver
-RUN pip install -U yt-dlp --pre
-RUN pip install -U yt-dlp[ejs]
+# Activate venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Install global EJS runtime for challenge solving
+# Install yt-dlp nightly + EJS solver inside venv
+RUN pip install --upgrade pip
+RUN pip install --pre yt-dlp
+RUN pip install "yt-dlp[ejs]"
 RUN npm install -g ejs
 
-# Environment variable for yt-dlp to use JS runtime
+# Enable JS runtime
 ENV YTDLP_USE_JS_RUNTIME=1
 
-# Create cookies directory
+# Ensure cookies directory exists
 RUN mkdir -p /mnt/data
 
-# App directory
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python app requirements inside the venv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app code
+# Copy your application files
 COPY . .
 
 EXPOSE 8000
