@@ -8,6 +8,10 @@ import pathlib
 import threading
 import requests
 
+# For embedding metadata
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, TIT2
+
 # === CONFIG ===
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_DIR = "cache"
@@ -140,14 +144,8 @@ def safe_path_for_name(name: str) -> str:
 
 def download_and_convert_to_mp3(video_id: str) -> str:
     """
-    Download YouTube video as 40 kbps mono MP3 with cached thumbnail.
-    Returns the MP3 filename.
+    Download YouTube video as 40 kbps mono MP3 with cached thumbnail and embedded title.
     """
-    import pathlib
-    import requests
-    import os
-    import yt_dlp
-
     mp3_path = os.path.join(CACHE_DIR, f"{video_id}.mp3")
     jpg_path = os.path.join(CACHE_DIR, f"{video_id}.jpg")
 
@@ -155,6 +153,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     if os.path.exists(mp3_path):
         if not os.path.exists(jpg_path):
             _download_thumbnail(video_id, jpg_path)
+        _embed_title(mp3_path, video_id)
         return f"{video_id}.mp3"
 
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -177,13 +176,12 @@ def download_and_convert_to_mp3(video_id: str) -> str:
         'quiet': True,
         'no_warnings': True,
         'postprocessors': [{
-            'key': 'FFmpegPostProcessor'
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '40',
         }],
         'postprocessor_args': [
-            '-vn',           # strip video
             '-ac', '1',      # mono
-            '-b:a', '40k',   # bitrate
-            '-metadata', f"title={title}"  # embed title
         ]
     }
 
@@ -192,6 +190,9 @@ def download_and_convert_to_mp3(video_id: str) -> str:
 
     # Download thumbnail
     _download_thumbnail(video_id, jpg_path)
+
+    # Embed title metadata
+    _embed_title(mp3_path, title)
 
     return f"{video_id}.mp3"
 
@@ -209,11 +210,26 @@ def _download_thumbnail(video_id: str, path: str):
                 with open(path, "wb") as f:
                     f.write(r.content)
                 return
-        except Exception as e:
+        except Exception:
             continue
     # if all fail, remove old file if exists
     if os.path.exists(path):
         os.remove(path)
+
+
+def _embed_title(mp3_path: str, title: str):
+    """Embed title metadata into MP3 file using mutagen"""
+    if not title or not os.path.exists(mp3_path):
+        return
+    try:
+        audio = MP3(mp3_path, ID3=ID3)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.add(TIT2(encoding=3, text=title))
+        audio.save()
+    except Exception as e:
+        print("Failed to embed title metadata:", e)
+
 
 # ===========================
 #          ROUTES
@@ -230,6 +246,7 @@ def home():
             "thumb": thumb if os.path.exists(os.path.join(CACHE_DIR, thumb)) else None
         })
     return render_template_string(HOME_HTML, files=items)
+
 
 @app.route("/search")
 def search():
@@ -261,6 +278,7 @@ def search():
 
     return render_template_string(SEARCH_HTML, results=results, query=q)
 
+
 @app.route("/download")
 def download():
     vid = request.args.get("id")
@@ -280,6 +298,7 @@ def download():
 
     return redirect(url_for("home"))
 
+
 @app.route("/stream/<name>")
 def stream(name):
     try:
@@ -294,6 +313,7 @@ def stream(name):
         return send_file(path, mimetype="image/jpeg")
     return send_file(path, mimetype="audio/mpeg", conditional=True)
 
+
 @app.route("/cached/<name>")
 def cached_download(name):
     try:
@@ -305,6 +325,7 @@ def cached_download(name):
         abort(404)
 
     return send_file(path, mimetype="audio/mpeg", as_attachment=True, download_name=name)
+
 
 # ===========================
 #        RUN SERVER
