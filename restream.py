@@ -39,7 +39,7 @@ input[type=text]{width:86%;padding:10px;border-radius:8px;border:0;margin-top:8p
 .audio-player{width:100%;margin-top:8px}
 a.link{color:#4cf;text-decoration:none}
 .footer{font-size:0.8em;color:#888;margin-top:12px}
-img.thumb{width:100%;border-radius:10px;margin-bottom:8px}
+img.thumb{width:120px;height:auto;border-radius:8px;display:block;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -90,7 +90,7 @@ body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:cent
 .card{background:#111;padding:10px;border-radius:10px;margin:8px 0;text-align:left}
 .btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none; border:0; cursor:pointer}
 .small{font-size:0.85em;color:#aaa}
-img.thumb{width:100%;border-radius:10px;margin-bottom:8px}
+img.thumb{width:120px;height:auto;border-radius:8px;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -134,38 +134,36 @@ def safe_path_for_name(name: str) -> str:
 # --- YT-DLP / download helper ---
 
 def download_and_convert_to_mp3(video_id: str) -> str:
-    # final paths using video_id
+    # final paths
     mp3_name = f"{video_id}.mp3"
     jpg_name = f"{video_id}.jpg"
     mp3_path = os.path.join(CACHE_DIR, mp3_name)
     jpg_path = os.path.join(CACHE_DIR, jpg_name)
 
-    # If already exists, skip conversion
+    # Already exists?
     if os.path.exists(mp3_path):
         return mp3_name
 
-    # Extract metadata (including thumbnail URL)
+    # Extract metadata only
     metadata_opts = {
         'quiet': True,
         'cookiefile': COOKIES_PATH
     }
+
     with yt_dlp.YoutubeDL(metadata_opts) as ydl_meta:
         info = ydl_meta.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
 
-    # Download and convert to MP3
+    # Download + convert
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': mp3_path,             # DIRECTLY write as <id>.mp3
+        'outtmpl': mp3_path,
         'cookiefile': COOKIES_PATH,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '40',
         }],
-        'postprocessor_args': [
-            '-ac', '1',                  # mono
-            '-b:a', '40k'                # 40 kbps
-        ],
+        'postprocessor_args': ['-ac','1','-b:a','40k'],
         'prefer_ffmpeg': True,
         'quiet': True,
         'no_warnings': True,
@@ -174,18 +172,16 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
 
-    if not os.path.exists(mp3_path):
-        raise FileNotFoundError("Expected MP3 output not found")
+    # Compact thumbnail
+    small_thumb = f"https://i.ytimg.com/vi/{video_id}/default.jpg"
 
-    # Download thumbnail → <id>.jpg
-    thumb_url = info.get("thumbnail")
-    if thumb_url:
-        try:
-            r = requests.get(thumb_url, timeout=10)
+    try:
+        r = requests.get(small_thumb, timeout=10)
+        if r.status_code == 200:
             with open(jpg_path, "wb") as f:
                 f.write(r.content)
-        except:
-            pass
+    except:
+        pass
 
     return mp3_name
 
@@ -195,6 +191,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
 def home():
     files = sorted([f for f in os.listdir(CACHE_DIR) if f.endswith(".mp3")])
     items = []
+
     for f in files:
         thumb = f.replace(".mp3", ".jpg")
         thumb_path = os.path.join(CACHE_DIR, thumb)
@@ -202,6 +199,7 @@ def home():
             "mp3": f,
             "thumb": thumb if os.path.exists(thumb_path) else None
         })
+
     return render_template_string(HOME_HTML, files=items)
 
 @app.route("/search")
@@ -221,14 +219,18 @@ def search():
         data = ydl.extract_info(f"ytsearch10:{q}", download=False)
 
     results = []
+
     for entry in data.get("entries", []):
-        thumb = None
-        if entry.get("thumbnails"):
-            thumb = entry["thumbnails"][-1]["url"]
+        vid = entry.get("id")
+        if not vid:
+            continue
+
+        # Use compact 120x90 thumbnail
+        thumb = f"https://i.ytimg.com/vi/{vid}/default.jpg"
 
         results.append(type("Obj", (object,), {
             "title": entry.get("title"),
-            "id": entry.get("id"),
+            "id": vid,
             "thumb": thumb
         }))
 
@@ -267,6 +269,7 @@ def stream(name):
 
     if name.endswith(".jpg"):
         return send_file(path, mimetype='image/jpeg', as_attachment=False)
+
     return send_file(path, mimetype='audio/mpeg', as_attachment=False, conditional=True)
 
 @app.route('/cached/<name>')
