@@ -130,10 +130,17 @@ def safe_path_for_name(name: str) -> str:
 # --- YT-DLP / download helper ---
 
 def download_and_convert_to_mp3(video_id: str) -> str:
-    filename = f"{uuid.uuid4()}.mp3"
-    outpath = os.path.join(CACHE_DIR, filename)
+    # final paths using video_id
+    mp3_name = f"{video_id}.mp3"
+    jpg_name = f"{video_id}.jpg"
+    mp3_path = os.path.join(CACHE_DIR, mp3_name)
+    jpg_path = os.path.join(CACHE_DIR, jpg_name)
 
-    # Extract metadata first
+    # If already exists, skip conversion
+    if os.path.exists(mp3_path):
+        return mp3_name
+
+    # Extract metadata (including thumbnail URL)
     metadata_opts = {
         'quiet': True,
         'cookiefile': COOKIES_PATH
@@ -141,10 +148,10 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     with yt_dlp.YoutubeDL(metadata_opts) as ydl_meta:
         info = ydl_meta.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
 
-    # Download audio
+    # Download and convert to MP3
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': outpath,
+        'outtmpl': mp3_path,             # DIRECTLY write as <id>.mp3
         'cookiefile': COOKIES_PATH,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
@@ -152,8 +159,8 @@ def download_and_convert_to_mp3(video_id: str) -> str:
             'preferredquality': '40',
         }],
         'postprocessor_args': [
-            '-ac', '1',
-            '-b:a', '40k'
+            '-ac', '1',                  # mono
+            '-b:a', '40k'                # 40 kbps
         ],
         'prefer_ffmpeg': True,
         'quiet': True,
@@ -163,13 +170,12 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
 
-    if not os.path.exists(outpath):
-        raise FileNotFoundError("Expected output not found")
+    if not os.path.exists(mp3_path):
+        raise FileNotFoundError("Expected MP3 output not found")
 
-    # Download thumbnail
+    # Download thumbnail → <id>.jpg
     thumb_url = info.get("thumbnail")
     if thumb_url:
-        jpg_path = outpath.replace(".mp3", ".jpg")
         try:
             r = requests.get(thumb_url, timeout=10)
             with open(jpg_path, "wb") as f:
@@ -177,10 +183,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
         except:
             pass
 
-    return filename
-
-active_downloads = set()
-active_lock = threading.Lock()
+    return mp3_name
 
 # --- Routes ---
 
