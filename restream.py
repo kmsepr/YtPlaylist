@@ -121,29 +121,26 @@ def safe_path_for_name(name: str) -> str:
 # --- YT-DLP / download helper ---
 
 def download_and_convert_to_mp3(video_id: str) -> str:
-    """Downloads given YouTube video id and converts to 40 kbps mono MP3.
-    Returns the cached filename (basename) on success; raises on error.
-    """
     filename = f"{uuid.uuid4()}.mp3"
     outpath = os.path.join(CACHE_DIR, filename)
 
     ydl_opts = {
-    'format': 'bestaudio/best',
-    'outtmpl': output_path,
-    'cookiefile': '/mnt/data/cookies.txt',
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '40',
-    }],
-    'postprocessor_args': [
-        '-ac', '1',         # mono
-        '-b:a', '40k'       # 40kbps
-    ],
-    'prefer_ffmpeg': True,
-    'quiet': True,
-    'no_warnings': True,
-}
+        'format': 'bestaudio/best',
+        'outtmpl': outpath,                    # <-- FIXED
+        'cookiefile': '/mnt/data/cookies.txt',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '40',
+        }],
+        'postprocessor_args': [
+            '-ac', '1',       # mono
+            '-b:a', '40k'     # 40 kbps
+        ],
+        'prefer_ffmpeg': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
