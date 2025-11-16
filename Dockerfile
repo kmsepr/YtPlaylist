@@ -1,47 +1,43 @@
-# Use a lightweight Python base image
-FROM python:3.11-slim
+FROM node:18-slim
 
-# Install system dependencies including ffmpeg + Node.js for yt-dlp JS challenges
+# Install Python + ffmpeg + system libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
     ffmpeg \
     gcc \
     libmagic-dev \
     curl \
     libmagic1 \
-    nodejs \
-    npm \
  && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp nightly (required to solve n-challenge)
+# Ensure Python is default
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+# Install yt-dlp nightly + EJS solver
 RUN pip install -U yt-dlp --pre
 RUN pip install -U yt-dlp[ejs]
 
-# OPTIONAL: install standalone yt-dlp binary for fallback
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-    -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp
-
-# Install global EJS (yt-dlp uses it for signature-challenge solving)
+# Install global EJS runtime for challenge solving
 RUN npm install -g ejs
 
-# Enable JS runtime for yt-dlp
+# Environment variable for yt-dlp to use JS runtime
 ENV YTDLP_USE_JS_RUNTIME=1
 
-# Ensure cookies directory exists
+# Create cookies directory
 RUN mkdir -p /mnt/data
 
-# Set working directory
+# App directory
 WORKDIR /app
 
-# Copy requirements and install Python packages
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the app code
+# Copy app code
 COPY . .
 
-# Expose port for the Flask app
 EXPOSE 8000
 
-# Start the Flask app
 CMD ["python", "restream.py"]
