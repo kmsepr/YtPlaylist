@@ -1,10 +1,4 @@
 flask
 requests
-brotli
-beautifulsoup4
 yt-dlp
-pandas
-openpyxl
-ebooklib
-lxml
-requests
+mutagen
