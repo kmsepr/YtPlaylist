@@ -128,23 +128,22 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     outpath = os.path.join(CACHE_DIR, filename)
 
     ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": outpath,
-        "quiet": True,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-        # Force mono + 40 kbps
-        "postprocessor_args": [
-            "-ac", "1",
-            "-b:a", "40k"
-        ],
-        "paths": {"home": CACHE_DIR}
-    }
+    'format': 'bestaudio/best',
+    'outtmpl': output_path,
+    'cookiefile': '/mnt/data/cookies.txt',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '40',
+    }],
+    'postprocessor_args': [
+        '-ac', '1',         # mono
+        '-b:a', '40k'       # 40kbps
+    ],
+    'prefer_ffmpeg': True,
+    'quiet': True,
+    'no_warnings': True,
+}
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
