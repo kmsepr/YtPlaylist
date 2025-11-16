@@ -139,53 +139,81 @@ def safe_path_for_name(name: str) -> str:
 # ===========================
 
 def download_and_convert_to_mp3(video_id: str) -> str:
-    mp3_name = f"{video_id}.mp3"
-    jpg_name = f"{video_id}.jpg"
-    mp3_path = os.path.join(CACHE_DIR, mp3_name)
-    jpg_path = os.path.join(CACHE_DIR, jpg_name)
+    """
+    Download YouTube video as 40 kbps mono MP3 with cached thumbnail.
+    Returns the MP3 filename.
+    """
+    import pathlib
+    import requests
+    import os
+    import yt_dlp
 
+    mp3_path = os.path.join(CACHE_DIR, f"{video_id}.mp3")
+    jpg_path = os.path.join(CACHE_DIR, f"{video_id}.jpg")
+
+    # If MP3 exists, ensure thumbnail exists
     if os.path.exists(mp3_path):
-        return mp3_name
+        if not os.path.exists(jpg_path):
+            _download_thumbnail(video_id, jpg_path)
+        return f"{video_id}.mp3"
 
-    # Extract metadata (helps yt-dlp detect format)
-    metadata_opts = {
-        'quiet': True,
-        'cookiefile': COOKIES_PATH,
-    }
-    with yt_dlp.YoutubeDL(metadata_opts) as ydl:
-        ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+    url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # REAL download
+    # Extract metadata first (helps yt-dlp pick format)
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True, 'cookiefile': COOKIES_PATH}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get("title", "")
+    except Exception as e:
+        print("Metadata extraction failed:", e)
+        title = ""
+
+    # Convert to MP3 40kbps mono
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': mp3_path,          # FIXED – ensures correct filename
+        'outtmpl': os.path.join(CACHE_DIR, f"{video_id}.%(ext)s"),
         'cookiefile': COOKIES_PATH,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '40',
-        }],
-        'postprocessor_args': ['-ac', '1', '-b:a', '40k'],
         'prefer_ffmpeg': True,
         'quiet': True,
         'no_warnings': True,
+        'postprocessors': [{
+            'key': 'FFmpegPostProcessor'
+        }],
+        'postprocessor_args': [
+            '-vn',           # strip video
+            '-ac', '1',      # mono
+            '-b:a', '40k',   # bitrate
+            '-metadata', f"title={title}"  # embed title
+        ]
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        ydl.download([url])
 
-    # Download compact thumbnail (120x90)
-    thumb_url = f"https://i.ytimg.com/vi/{video_id}/default.jpg"
+    # Download thumbnail
+    _download_thumbnail(video_id, jpg_path)
 
-    try:
-        r = requests.get(thumb_url, timeout=10)
-        if r.status_code == 200:
-            with open(jpg_path, "wb") as f:
-                f.write(r.content)
-    except:
-        pass
+    return f"{video_id}.mp3"
 
-    return mp3_name
+
+def _download_thumbnail(video_id: str, path: str):
+    """Download YouTube thumbnail, fallback if fails"""
+    thumb_urls = [
+        f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",   # 320x180
+        f"https://i.ytimg.com/vi/{video_id}/default.jpg",     # 120x90 fallback
+    ]
+    for url in thumb_urls:
+        try:
+            r = requests.get(url, timeout=(4, 4))
+            if r.ok:
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                return
+        except Exception as e:
+            continue
+    # if all fail, remove old file if exists
+    if os.path.exists(path):
+        os.remove(path)
 
 # ===========================
 #          ROUTES
