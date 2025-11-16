@@ -1,8 +1,6 @@
 # youtube_lite_flask_mp3.py
 # Small Flask app: search YouTube, convert to 40 kbps mono MP3, cache results,
 # show cached MP3s on home with an audio streamer (no video).
-# Requirements: pip install flask yt-dlp
-#              ffmpeg must be installed on the system and available in PATH.
 
 from flask import Flask, request, render_template_string, send_file, redirect, abort, url_for
 import yt_dlp
@@ -15,7 +13,8 @@ app = Flask(__name__)
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# --- Templates (simple, "old Java" feel: compact, list-based UI) ---
+# --- Templates (simple UI) ---
+
 HOME_HTML = """
 <!doctype html>
 <html>
@@ -27,7 +26,7 @@ body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:cent
 .container{max-width:420px;margin:8px auto}
 .header{padding:10px}
 input[type=text]{width:86%;padding:10px;border-radius:8px;border:0;margin-top:8px}
-.btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none}
+.btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none; border:0; cursor:pointer}
 .card{background:#111;padding:10px;border-radius:10px;margin:8px 0;text-align:left}
 .small{font-size:0.85em;color:#aaa}
 .audio-player{width:100%;margin-top:8px}
@@ -41,6 +40,7 @@ a.link{color:#4cf;text-decoration:none}
     <h2>YouTube Lite (MP3 only)</h2>
     <form action="/search" method="get">
       <input name="q" placeholder="Search YouTube..." value="{{ query|default('') }}">
+      <button class="btn" type="submit">Search</button>
     </form>
   </div>
 
@@ -78,7 +78,7 @@ SEARCH_HTML = """
 body{font-family: sans-serif; background:#0b0b0b; color:#eaeaea; text-align:center}
 .container{max-width:420px;margin:8px auto}
 .card{background:#111;padding:10px;border-radius:10px;margin:8px 0;text-align:left}
-.btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none}
+.btn{display:inline-block;padding:8px 10px;border-radius:8px;margin:6px;background:#214a6b;color:#fff;text-decoration:none; border:0; cursor:pointer}
 .small{font-size:0.85em;color:#aaa}
 </style>
 </head>
@@ -126,7 +126,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
 
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': outpath,                    # <-- FIXED
+        'outtmpl': outpath,
         'cookiefile': '/mnt/data/cookies.txt',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
@@ -134,8 +134,8 @@ def download_and_convert_to_mp3(video_id: str) -> str:
             'preferredquality': '40',
         }],
         'postprocessor_args': [
-            '-ac', '1',       # mono
-            '-b:a', '40k'     # 40 kbps
+            '-ac', '1',
+            '-b:a', '40k'
         ],
         'prefer_ffmpeg': True,
         'quiet': True,
@@ -170,7 +170,9 @@ def search():
         "quiet": True,
         "skip_download": True,
         "extract_flat": True,
+        "cookiefile": "/mnt/data/cookies.txt"
     }
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         data = ydl.extract_info(f"ytsearch10:{q}", download=False)
 
