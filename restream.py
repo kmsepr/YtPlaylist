@@ -13,6 +13,10 @@ import requests
 COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_DIR = "cache"
 
+# --- Global lock to prevent double conversions ---
+active_lock = threading.Lock()
+active_downloads = set()
+
 app = Flask(__name__)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
