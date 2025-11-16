@@ -9,8 +9,11 @@ import pathlib
 import threading
 import requests
 
-app = Flask(__name__)
+# === CONFIG ===
+COOKIES_PATH = "/mnt/data/cookies.txt"
 CACHE_DIR = "cache"
+
+app = Flask(__name__)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # --- Templates (simple UI) ---
@@ -133,7 +136,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     # Extract metadata first
     metadata_opts = {
         'quiet': True,
-        'cookiefile': '/mnt/data/cookies.txt'
+        'cookiefile': COOKIES_PATH
     }
     with yt_dlp.YoutubeDL(metadata_opts) as ydl_meta:
         info = ydl_meta.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
@@ -142,7 +145,7 @@ def download_and_convert_to_mp3(video_id: str) -> str:
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': outpath,
-        'cookiefile': '/mnt/data/cookies.txt',
+        'cookiefile': COOKIES_PATH,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -204,7 +207,7 @@ def search():
         "quiet": True,
         "skip_download": True,
         "extract_flat": True,
-        "cookiefile": "/mnt/data/cookies.txt"
+        "cookiefile": COOKIES_PATH
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
