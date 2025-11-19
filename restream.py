@@ -45,6 +45,7 @@ input[type=text]{width:86%;padding:10px;border-radius:8px;border:0;margin-top:8p
 a.link{color:#4cf;text-decoration:none}
 .footer{font-size:0.8em;color:#888;margin-top:12px}
 img.thumb{width:120px;height:auto;border-radius:8px;display:block;margin-bottom:8px}
+.btn-del{background:#a33;color:#fff;padding:6px 10px;border-radius:8px;border:0;cursor:pointer}
 </style>
 </head>
 <body>
@@ -71,6 +72,12 @@ img.thumb{width:120px;height:auto;border-radius:8px;display:block;margin-bottom:
         <div class="small">
           <a class="link" href="{{ url_for('cached_download', name=f.mp3) }}">Download</a>
         </div>
+
+        <!-- DELETE BUTTON -->
+        <form action="{{ url_for('delete_cached', name=f.mp3) }}" method="post">
+          <button class="btn-del">Delete</button>
+        </form>
+
       </div>
     {% endfor %}
   {% else %}
@@ -200,8 +207,8 @@ def download_and_convert_to_mp3(video_id: str) -> str:
 def _download_thumbnail(video_id: str, path: str):
     """Download YouTube thumbnail, fallback if fails"""
     thumb_urls = [
-        f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",   # 320x180
-        f"https://i.ytimg.com/vi/{video_id}/default.jpg",     # 120x90 fallback
+        f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
+        f"https://i.ytimg.com/vi/{video_id}/default.jpg",
     ]
     for url in thumb_urls:
         try:
@@ -212,7 +219,6 @@ def _download_thumbnail(video_id: str, path: str):
                 return
         except Exception:
             continue
-    # if all fail, remove old file if exists
     if os.path.exists(path):
         os.remove(path)
 
@@ -325,6 +331,28 @@ def cached_download(name):
         abort(404)
 
     return send_file(path, mimetype="audio/mpeg", as_attachment=True, download_name=name)
+
+
+# ===========================
+#       DELETE ROUTE
+# ===========================
+
+@app.route("/delete/<name>", methods=["POST"])
+def delete_cached(name):
+    try:
+        path = safe_path_for_name(name)
+    except:
+        abort(404)
+
+    if os.path.exists(path):
+        os.remove(path)
+
+    thumb = name.replace(".mp3", ".jpg")
+    thumb_path = os.path.join(CACHE_DIR, thumb)
+    if os.path.exists(thumb_path):
+        os.remove(thumb_path)
+
+    return redirect(url_for("home"))
 
 
 # ===========================
